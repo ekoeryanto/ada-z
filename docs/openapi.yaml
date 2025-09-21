@@ -1,0 +1,485 @@
+openapi: 3.0.0
+info:
+  title: press-32 Device API
+  version: 1.0.0
+  description: >-
+    Full OpenAPI description of the device HTTP API implemented in the
+    firmware. Covers config, time, calibration, sensors, notifications,
+    and SD configuration endpoints.
+
+servers:
+  - url: http://{device_ip}
+    variables:
+      device_ip:
+        default: localhost
+        description: Device IP or hostname (replace with device address)
+
+paths:
+  /:
+    get:
+      summary: System info
+      description: Returns device network, runtime, build, and basic sensor counts.
+      responses:
+        '200':
+          description: System information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ip:
+                    type: string
+                  ap_ip:
+                    type: string
+                  mac:
+                    type: string
+                  ssid:
+                    type: string
+                  rssi:
+                    type: integer
+                  hostname:
+                    type: string
+                  uptime_seconds:
+                    type: integer
+                  num_sensors_configured:
+                    type: integer
+                  num_sensors_total:
+                    type: integer
+                example:
+                  ip: "192.168.1.123"
+                  ap_ip: "192.168.4.1"
+                  mac: "DE:AD:BE:EF:00:01"
+                  ssid: "MyWiFi"
+                  rssi: -60
+                  hostname: "press-32"
+                  uptime_seconds: 3600
+                  num_sensors_configured: 3
+                  num_sensors_total: 3
+
+  /config:
+    get:
+      summary: Get current configuration
+      responses:
+        '200':
+          description: Current configuration (partial)
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      summary: Update configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                http_notification_url:
+                  type: string
+      responses:
+        '200':
+          description: Acknowledged
+
+  /time:
+    get:
+      summary: Get system and RTC time
+      responses:
+        '200':
+          description: Time information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  system_epoch:
+                    type: integer
+                  system_iso:
+                    type: string
+                  rtc_epoch:
+                    type: integer
+                  rtc_iso:
+                    type: string
+    post:
+      summary: Update or report time (not implemented in firmware)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                example:
+                  status: "ok"
+  /time/sync:
+    post:
+      summary: Trigger immediate NTP sync
+      responses:
+        '200':
+          description: Sync triggered
+
+  /time/config:
+    get:
+      summary: Get time configuration
+      responses:
+        '200':
+          description: Time config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rtc_enabled:
+                    type: integer
+    post:
+      summary: Update time config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rtc_enabled:
+                  type: integer
+      responses:
+        '200':
+          description: Updated
+
+  /calibrate:
+    get:
+      summary: Get calibration for a pin
+      parameters:
+        - in: query
+          name: pin_index
+          schema:
+            type: integer
+        - in: query
+          name: pin_number
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Calibration for pin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calibration'
+    post:
+      summary: Set calibration for a pin (explicit or trigger-based)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin_index:
+                  type: integer
+                pin_number:
+                  type: integer
+                zero_raw_adc:
+                  type: number
+                span_raw_adc:
+                  type: number
+                zero_pressure_value:
+                  type: number
+                span_pressure_value:
+                  type: number
+                trigger_zero_calibration:
+                  type: boolean
+                trigger_span_calibration:
+                  type: boolean
+      responses:
+        '200':
+          description: Calibration updated
+
+  /calibrate/pin:
+    post:
+      summary: Convenience single-pin calibration endpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin_number:
+                  type: integer
+                zero_raw_adc:
+                  type: number
+                span_raw_adc:
+                  type: number
+                zero_pressure_value:
+                  type: number
+                span_pressure_value:
+                  type: number
+                trigger_zero_calibration:
+                  type: boolean
+                trigger_span_calibration:
+                  type: boolean
+      responses:
+        '200':
+          description: Calibration saved
+
+  /calibrate/all:
+    get:
+      summary: Return calibration for all configured sensors
+      responses:
+        '200':
+          description: All calibrations
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/Calibration'
+
+  /sensors/config:
+    get:
+      summary: Get sensors runtime config
+      responses:
+        '200':
+          description: Sensors config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  num_sensors:
+                    type: integer
+                  sensors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SensorConfig'
+    post:
+      summary: Update sensors config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sensors:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SensorConfigUpdate'
+      responses:
+        '200':
+          description: Updated
+
+  /sensors/readings:
+    get:
+      summary: Live sensor readings
+      description: Returns raw ADC, smoothed ADC, and calibrated voltage and pressure values. Pressure values are reported in bar only.
+      responses:
+        '200':
+          description: Sensor readings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  num_sensors:
+                    type: integer
+                  sensors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SensorReading'
+
+  /notifications/config:
+    get:
+      summary: Get notification mode and payload type
+      responses:
+        '200':
+          description: Notification config
+    post:
+      summary: Update notification config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: integer
+                payload_type:
+                  type: integer
+      responses:
+        '200':
+          description: Updated
+
+  /notifications/trigger:
+    post:
+      summary: Trigger notification(s) immediately by reading sensors
+      description: "Trigger a notification for a single sensor or for all configured sensors. Provide either `sensor_index` or `pin_number` in the JSON body to target a single sensor. An empty JSON object triggers notifications for all sensors."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sensor_index:
+                  type: integer
+                pin_number:
+                  type: integer
+      responses:
+        '200':
+          description: Notification triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                example:
+                  status: "success"
+                  message: "Batch notification triggered"
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                example:
+                  status: "error"
+                  message: "Missing body or invalid sensor_index"
+
+  /sd/config:
+    get:
+      summary: SD logging config
+      responses:
+        '200':
+          description: SD config
+    post:
+      summary: Update SD logging config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sd_enabled:
+                  type: integer
+      responses:
+        '200':
+          description: Updated
+
+components:
+  schemas:
+    Calibration:
+      type: object
+      properties:
+        pin_index:
+          type: integer
+        pin_number:
+          type: integer
+        sensor_id:
+          type: string
+        zero_raw_adc:
+          type: number
+        span_raw_adc:
+          type: number
+        zero_pressure_value:
+          type: number
+        span_pressure_value:
+          type: number
+        scale:
+          type: number
+        offset:
+          type: number
+      example:
+        pin_index: 0
+        pin_number: 34
+        sensor_id: "AI1"
+        zero_raw_adc: 0.0
+        span_raw_adc: 4095.0
+        zero_pressure_value: 0.0
+        span_pressure_value: 1.0
+        scale: 1.0
+        offset: 0.0
+
+    SensorConfig:
+      type: object
+      properties:
+        sensor_index:
+          type: integer
+        sensor_pin:
+          type: integer
+        enabled:
+          type: integer
+        notification_interval_ms:
+          type: integer
+      example:
+        sensor_index: 0
+        sensor_pin: 34
+        enabled: 1
+        notification_interval_ms: 60000
+
+    SensorConfigUpdate:
+      type: object
+      properties:
+        sensor_index:
+          type: integer
+        enabled:
+          type: integer
+        notification_interval_ms:
+          type: integer
+
+    SensorReading:
+      type: object
+      properties:
+        sensor_index:
+          type: integer
+        sensor_id:
+          type: string
+        sensor_pin:
+          type: integer
+        enabled:
+          type: integer
+        raw_adc:
+          type: integer
+        smoothed_adc:
+          type: number
+        raw_voltage:
+          type: number
+          description: Raw measured voltage (pre-smoothing) in volts
+        smoothed_voltage:
+          type: number
+          description: Smoothed voltage in volts
+        raw_pressure_bar:
+          type: number
+          description: Pressure converted from raw ADC before smoothing, in bar
+        smoothed_pressure_bar:
+          type: number
+          description: Pressure converted from smoothed ADC, in bar
+        pressure_unit:
+          type: string
+          description: Always 'bar'
+      example:
+        sensor_index: 0
+        sensor_id: "AI1"
+        sensor_pin: 34
+        enabled: 1
+        raw_adc: 2048
+        smoothed_adc: 2050.12
+        raw_voltage: 1.65
+        smoothed_voltage: 1.652
+        raw_pressure_bar: 0.125
+        smoothed_pressure_bar: 0.126
+        pressure_unit: "bar"

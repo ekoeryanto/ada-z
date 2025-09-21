@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PlatformIO: OTA Upload (espota)",
+            "type": "shell",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [],
+            "command": "pio",
+            "args": [
+                "run",
+                "--target",
+                "upload",
+                "-e",
+                "esp32dev_espota",
+                "--upload-port",
+                "${input:deviceIp}",
+                "--upload-port",
+                "3232",
+                "--upload-flags",
+                "--auth=Mar9aMulya"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "detail": "Prompts for device IP and performs espota upload using configured OTA password/port."
+        }
+    ],
+    "inputs": [
+        {
+            "id": "deviceIp",
+            "type": "promptString",
+            "description": "Device IP for espota (e.g. 192.168.111.29)",
+            "default": "192.168.111.29"
+        }
+    ]
+}

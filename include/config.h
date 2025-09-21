@@ -1,0 +1,74 @@
+// Single consolidated project configuration header
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi defaults
+#define DEFAULT_SSID "Perumda Tirta Patriot"
+#define DEFAULT_PASS "1sampai8"
+#define WM_AP_NAME   "adaAP"
+#define WM_FALLBACK_SSID "ada-x-fallback"
+#define WM_FALLBACK_PASS "fallback123"
+
+// mDNS
+#define MDNS_HOSTNAME "ada-x"
+
+// OTA
+#define OTA_PORT     3232
+#define OTA_PASSWORD "Mar9aMulya"
+
+// Sensor timing defaults
+#define SENSOR_READ_INTERVAL 60000 // ms
+#define EMA_ALPHA 0.05f
+#define PRINT_TIME_INTERVAL 5000 // ms
+
+// Default per-sensor settings
+#define DEFAULT_SENSOR_ENABLED true
+#define DEFAULT_SENSOR_NOTIFICATION_INTERVAL (5 * 60 * 1000)
+
+// NTP / timezone
+extern const char* NTP_SERVERS[];
+#define TIMEZONE "GMT-7"
+#define NTP_SYNC_INTERVAL (24 * 3600 * 1000)
+#define NTP_RETRY_INTERVAL (5 * 60 * 1000)
+
+// Preferences keys and defaults
+#define PREF_RTC_ENABLED "rtc_enabled"
+#define DEFAULT_RTC_ENABLED 1
+
+#define PREF_SD_ENABLED "sd_enabled"
+#define DEFAULT_SD_ENABLED 1
+
+// Notification defaults
+#define NOTIF_MODE_SERIAL  (1 << 0)
+#define NOTIF_MODE_WEBHOOK (1 << 1)
+#define DEFAULT_NOTIFICATION_MODE NOTIF_MODE_WEBHOOK
+
+#define PAYLOAD_TYPE_COMPACT 0
+#define PAYLOAD_TYPE_DETAILED 1
+#define PAYLOAD_TYPE_RAW 2
+#define DEFAULT_NOTIFICATION_PAYLOAD_TYPE PAYLOAD_TYPE_DETAILED
+
+#define PREF_NOTIFICATION_MODE "notification_mode"
+#define PREF_NOTIFICATION_PAYLOAD "notification_payload"
+
+// Per-sensor preference keys
+#define PREF_SENSOR_ENABLED_PREFIX "sensor_en_"
+#define PREF_SENSOR_INTERVAL_PREFIX "sensor_iv_"
+
+// Defaults for 4-20mA current pressure sensors (ADS1115)
+#define DEFAULT_CURRENT_INIT_MA 4.00f
+#define DEFAULT_RANGE_MM 5000.0f
+#define DEFAULT_DENSITY_WATER 1.0f
+#define DEFAULT_SHUNT_OHM 119.0f
+#define DEFAULT_AMP_GAIN 2.0f
+
+// HTTP notification endpoint (change to your URL)
+#define HTTP_NOTIFICATION_URL "https://pms.tirtapatriot.net/flows/trigger/9B18A953-07DF-4521-B9F0-6B4CF968DB6B"
+#define HTTP_NOTIFICATION_INTERVAL (5 * 60 * 1000)
+
+// Simple header type for optional headers; actual arrays are defined in a .cpp if needed
+struct HttpHeader { const char* key; const char* value; };
+extern const HttpHeader HTTP_NOTIFICATION_HEADERS[];
+extern const int NUM_HTTP_NOTIFICATION_HEADERS;
+
+#endif // CONFIG_H
