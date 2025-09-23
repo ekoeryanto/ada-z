@@ -5,6 +5,7 @@
 // Preferences helpers
 #include <Preferences.h>
 #include "preferences_helper.h"
+#include "calibration_keys.h"
 
 static Adafruit_ADS1115 ads; // 16-bit ADC
 static uint8_t adsAddress = 0x48;
@@ -88,11 +89,11 @@ float readAdsMa(uint8_t channel, float shunt_ohm, float amp_gain) {
         if (mode == ADS_MODE_TP5551) {
         // TP5551 outputs a voltage proportional to current. Use per-channel tp_scale
         // which is mV per mA. Default estimated from previous shunt+amp default: 119 * 2 = 238 mV/mA
-        Preferences p;
-        safePreferencesBegin(p, "ads_cfg");
-        char skey[16]; snprintf(skey, sizeof(skey), "tp_scale_%d", channel);
-        float tp_scale = safeGetFloat(p, skey, 238.0f);
-        p.end();
+    Preferences p;
+    safePreferencesBegin(p, CAL_NAMESPACE);
+    char skey[16]; snprintf(skey, sizeof(skey), "tp_scale_%d", channel);
+    float tp_scale = safeGetFloat(p, skey, 238.0f);
+    p.end();
         if (tp_scale <= 0.0f) return 0.0f;
         float m = mv / tp_scale; // mA
         // Push into median buffer
@@ -211,7 +212,7 @@ int getAdsChannelMode(uint8_t channel) {
 
 float getAdsTpScale(uint8_t channel) {
     Preferences p;
-    safePreferencesBegin(p, "ads_cfg");
+    safePreferencesBegin(p, CAL_NAMESPACE);
     char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", channel);
     float v = safeGetFloat(p, key, 238.0f);
     p.end();

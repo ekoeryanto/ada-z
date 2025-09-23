@@ -16,6 +16,7 @@
 #include "time_sync.h"
 #include "sd_logger.h"
 #include "voltage_pressure_sensor.h"
+#include "sample_store.h"
 #include "ota_updater.h"
 #include "wifi_manager_module.h"
 #include <Preferences.h>
@@ -85,6 +86,14 @@ void setup() {
     // Initialize ADC calibration and voltage sensor after attenuation is set
     initAdcCalibration();
     setupVoltagePressureSensor(); // Initialize voltage pressure sensor (seed smoothed values after ADC configured)
+
+    // Initialize sample store: store samplesPerSensor (smaller => less averaging)
+    // Reduced from 12 to 6 and now to 4 for even more responsive averaging during calibration/debug
+    Preferences p_adc;
+    p_adc.begin("adc_cfg", true);
+    int samplesPerSensor = p_adc.getInt("samples_per_sensor", 4);
+    p_adc.end();
+    initSampleStore(getNumVoltageSensors(), samplesPerSensor);
 
     // Load per-sensor enable flags and notification intervals from Preferences
     int numSensors = getNumVoltageSensors();
@@ -216,6 +225,9 @@ void loop() {
             float smoothed = getSmoothedADC(i);
             float volt = getSmoothedVoltagePressure(i);
 
+            // Persist the sample into in-memory store for later averaging
+            addSample(i, raw, smoothed, volt);
+
             int mv_raw = adcRawToMv(raw);
             int mv_sm = adcRawToMv((int)round(smoothed));
             dataString += "," + String(raw) + "," + String(smoothed) + "," + String(volt) + "," + String(mv_raw) + "," + String(mv_sm);
@@ -224,9 +236,17 @@ void loop() {
             if (sensorEnabled && sensorEnabled[i]) {
                 unsigned long interval = sensorNotificationInterval ? sensorNotificationInterval[i] : HTTP_NOTIFICATION_INTERVAL;
                 if (now - sensorLastNotificationMillis[i] >= interval) {
-                    rawVals[batchCount] = raw;
-                    smoothedVals[batchCount] = smoothed;
-                    voltVals[batchCount] = volt;
+                    // Use averages from sample store for cleaner notification values if available
+                    float avgRaw, avgSmoothed, avgVolt;
+                    if (getAverages(i, avgRaw, avgSmoothed, avgVolt)) {
+                        rawVals[batchCount] = (int)round(avgRaw);
+                        smoothedVals[batchCount] = avgSmoothed;
+                        voltVals[batchCount] = avgVolt;
+                    } else {
+                        rawVals[batchCount] = raw;
+                        smoothedVals[batchCount] = smoothed;
+                        voltVals[batchCount] = volt;
+                    }
                     // Keep mapping for updating lastNotification: store sensor index in smoothedVals temporarily? No.
                     // We'll update lastNotificationMillis for included sensors by scanning again after send.
                     batchCount++;

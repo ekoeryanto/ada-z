@@ -16,6 +16,7 @@ const char* PREF_TIME_NS = "time";
 const char* PREF_LAST_NTP_EPOCH = "last_ntp";
 const char* PREF_LAST_NTP_ISO = "last_ntp_iso";
 static bool rtcEnabled = true;
+static bool rtcLostPowerFlag = false;
 
 // NTP Servers Definition (defined once here)
 const char* NTP_SERVERS[] = {"10.10.10.2", "pool.ntp.org", "time.nist.gov", "time.google.com"};
@@ -47,6 +48,57 @@ String getLastNtpSuccessIso() {
     String s = preferences.getString(PREF_LAST_NTP_ISO, "");
     preferences.end();
     return s;
+}
+
+String getIsoTimestamp() {
+    time_t sys = time(nullptr);
+    struct tm *tm_sys = localtime(&sys);
+    bool sys_valid = (tm_sys && (tm_sys->tm_year + 1900) > 2016);
+
+    // If we have a stored NTP epoch, prefer it when system/RTC drift significantly
+    time_t lastNtp = getLastNtpSuccessEpoch();
+    if (lastNtp > 0) {
+        // If system time differs from last NTP by more than 2 hours, use stored NTP ISO
+        if (!sys_valid || (labs((long)(sys - lastNtp)) > (2L * 3600))) {
+            String s = getLastNtpSuccessIso();
+            if (s.length() > 0) return s;
+        }
+    }
+
+    // If RTC present, validate its time before using it
+    if (rtcFound) {
+        time_t rtc_epoch = getRtcEpoch();
+        struct tm *tm_rtc = localtime(&rtc_epoch);
+        int rtc_year = tm_rtc ? (tm_rtc->tm_year + 1900) : 0;
+
+        // Plausibility checks: reasonable year and not wildly different from system time
+        bool rtc_plausible = (rtc_year >= 2020 && rtc_year <= 2035);
+        if (rtc_plausible) {
+            // If system time is valid, ensure RTC is within 30 days of system time; otherwise accept RTC
+            if (!sys_valid || (labs((long)(rtc_epoch - sys)) < (30L * 24 * 3600))) {
+                DateTime now = rtc.now();
+                char buf[32];
+                sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+                return String(buf);
+            }
+        }
+    }
+
+    // Prefer system time if valid
+    if (sys_valid) {
+        char isoBuf[32];
+        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
+        return String(isoBuf);
+    }
+
+    // Fallback: return last successful NTP ISO stored in preferences (could be empty)
+    String last = getLastNtpSuccessIso();
+    if (last.length() > 0) return last;
+
+    // As last resort return epoch as string
+    char epochBuf[32];
+    sprintf(epochBuf, "%lu", (unsigned long)sys);
+    return String(epochBuf);
 }
 
 bool isRtcPresent() {
@@ -125,6 +177,10 @@ void checkNtpAndUpdateRtc() {
     }
 }
 
+bool isRtcLostPower() {
+    return rtcLostPowerFlag;
+}
+
 void printCurrentTime() {
     if (!rtcFound) return;
     DateTime now = rtc.now();
@@ -154,6 +210,7 @@ void setupTimeSync() {
             Serial.println("RTC lost power, will require NTP sync to set RTC.");
             // If RTC lost power, ensure we attempt NTP when WiFi is available
             pendingRtcSync = true;
+            rtcLostPowerFlag = true;
         } else {
             // If RTC has valid time, seed system time from RTC now so logs and tasks have correct time before NTP
             DateTime now = rtc.now();

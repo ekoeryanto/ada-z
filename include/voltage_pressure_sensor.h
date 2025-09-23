@@ -41,5 +41,10 @@ float getSmoothedADC(int pinIndex);
 // Returns true if the pin has been saturated recently (consecutive full-scale reads)
 bool isPinSaturated(int pinIndex);
 
+// Runtime-configurable ADC smoothing parameters
+int getAdcNumSamples();
+void setAdcNumSamples(int n);
+
+
 #endif // VOLTAGE_PRESSURE_SENSOR_H
 

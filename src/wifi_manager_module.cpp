@@ -8,6 +8,18 @@
 
 WiFiManager wm; // WiFiManager instance
 
+static bool wifiHandlersRegistered = false;
+
+static void registerWifiHandlers() {
+    if (wifiHandlersRegistered) return;
+    // Trigger NTP sync whenever the station gets an IP (reconnect)
+    WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+        Serial.println("WiFi event: STA_GOT_IP - triggering NTP sync");
+        syncNtp();
+    }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+    wifiHandlersRegistered = true;
+}
+
 // Simpler WiFi connection strategy:
 // 1. Try a short, non-blocking connection attempt to the configured SSID.
 // 2. If it fails, bring up an AP and run blocking `wm.autoConnect()` so the user can configure WiFi.
@@ -24,6 +36,7 @@ void setupAndConnectWiFi() {
     // If already connected to WiFi, use it.
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Already connected to WiFi — skipping portal.");
+        registerWifiHandlers();
         syncNtp();
         return;
     }
@@ -40,7 +53,8 @@ void setupAndConnectWiFi() {
     // Note: OTA updater will be started from main once WiFi is available.
     // Allow a reasonable timeout for user to configure if portal opens
     wm.setConfigPortalTimeout(180); // 3 minutes
-    if (wm.autoConnect(WM_AP_NAME)) {
+    registerWifiHandlers();
+    if (wm.autoConnect(WM_AP_NAME, WM_AP_PASS)) {
         Serial.println("Connected via WiFiManager!");
         syncNtp();
     } else {

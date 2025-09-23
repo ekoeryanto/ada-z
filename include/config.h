@@ -6,8 +6,7 @@
 #define DEFAULT_SSID "Perumda Tirta Patriot"
 #define DEFAULT_PASS "1sampai8"
 #define WM_AP_NAME   "adaAP"
-#define WM_FALLBACK_SSID "ada-x-fallback"
-#define WM_FALLBACK_PASS "fallback123"
+#define WM_AP_PASS   "adaAPpass"
 
 // mDNS
 #define MDNS_HOSTNAME "ada-x"
@@ -23,7 +22,7 @@
 
 // Default per-sensor settings
 #define DEFAULT_SENSOR_ENABLED true
-#define DEFAULT_SENSOR_NOTIFICATION_INTERVAL (5 * 60 * 1000)
+#define DEFAULT_SENSOR_NOTIFICATION_INTERVAL (1 * 60 * 1000)
 
 // NTP / timezone
 extern const char* NTP_SERVERS[];
@@ -72,7 +71,7 @@ extern const char* NTP_SERVERS[];
 
 // HTTP notification endpoint (change to your URL)
 #define HTTP_NOTIFICATION_URL "https://pms.tirtapatriot.net/flows/trigger/9B18A953-07DF-4521-B9F0-6B4CF968DB6B"
-#define HTTP_NOTIFICATION_INTERVAL (5 * 60 * 1000)
+#define HTTP_NOTIFICATION_INTERVAL (1 * 60 * 1000)
 
 // Simple header type for optional headers; actual arrays are defined in a .cpp if needed
 struct HttpHeader { const char* key; const char* value; };

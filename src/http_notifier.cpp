@@ -6,6 +6,12 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
 #pragma GCC diagnostic pop
+#if defined(ARDUINOJSON_VERSION_MAJOR)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+using JsonDocDyn = DynamicJsonDocument;
+#pragma GCC diagnostic pop
+#endif
 #include <RTClib.h> // For DateTime object
 #include "time_sync.h" // For extern declarations of rtc and rtcFound
 #include "voltage_pressure_sensor.h"
@@ -16,6 +22,7 @@
 #include "current_pressure_sensor.h"
 #include "pins_config.h"
 #include "sensors_config.h"
+#include "sample_store.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -26,26 +33,119 @@ unsigned long lastHttpNotificationMillis = 0;
 static uint8_t notificationMode = DEFAULT_NOTIFICATION_MODE;
 static uint8_t notificationPayloadType = DEFAULT_NOTIFICATION_PAYLOAD_TYPE;
 
+// Ensure the system time is reasonably synced before generating notification timestamps.
+// Returns true if a valid system time is available (either already valid or obtained via NTP within timeout).
+static bool ensureTimeSynced(unsigned long timeoutMs = 3000) {
+    time_t sys = time(nullptr);
+    struct tm *tm_sys = localtime(&sys);
+    bool sys_valid = (tm_sys && (tm_sys->tm_year + 1900) > 2016);
+    if (sys_valid) return true;
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, cannot perform NTP sync before notification.");
+        return false;
+    }
+    Serial.println("Ensuring NTP sync before notification...");
+    syncNtp(true);
+    unsigned long start = millis();
+    while (millis() - start < timeoutMs) {
+        time_t now = time(nullptr);
+        struct tm *tm_now = localtime(&now);
+        if (tm_now && (tm_now->tm_year + 1900) > 2016) {
+            Serial.println("NTP sync obtained.");
+            return true;
+        }
+        delay(100);
+    }
+    Serial.println("Timed out waiting for NTP sync.");
+    return false;
+}
+
 void sendHttpNotification(int sensorIndex, int rawADC, float smoothedADC, float voltage) {
     // Route notification according to mode
     routeSensorNotification(sensorIndex, rawADC, smoothedADC, voltage);
 }
 
-void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[], float smoothedADC[]) {
-    // Build payload according to configured payload type
-    DynamicJsonDocument doc(2048);
-    if (rtcFound) {
-        DateTime now = rtc.now();
-        char timestamp[25];
-        sprintf(timestamp, "%04d-%02d-%02dT%02d:%02d:%02d",
-                now.year(), now.month(), now.day(),
-                now.hour(), now.minute(), now.second());
-        doc["timestamp"] = timestamp;
+// Send notification for an ADS channel (current sensor / TP5551). We build a small payload
+// consistent with batch ADS entries and then route through the same webhook/serial paths.
+void sendAdsNotification(int adsChannel, int16_t rawAds, float mv, float ma) {
+    // Attempt to sync time but do not abort sending; include diagnostic fields
+    bool time_ok = ensureTimeSynced();
+    JsonDocDyn doc(1536);
+    doc["timestamp"] = getIsoTimestamp();
+    doc["time_synced"] = time_ok ? 1 : 0;
+    doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
+    doc["rtu"] = String(getChipId());
+    JsonArray tags = doc["tags"].to<JsonArray>();
+    JsonObject a = tags.add<JsonObject>();
+    a["id"] = String("ADS_A") + String(adsChannel);
+    a["port"] = adsChannel;
+    a["index"] = getNumVoltageSensors() + adsChannel; // follow same indexing as batch
+    a["source"] = "ads1115";
+
+    JsonObject val = a["value"].to<JsonObject>();
+    JsonObject rawobj = val["raw"].to<JsonObject>();
+    rawobj["value"] = rawAds;
+    JsonObject conv = val["converted"].to<JsonObject>();
+    float voltage_v = mv / 1000.0f;
+    float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
+    conv["value"] = pressure_bar;
+    conv["unit"] = "bar";
+    conv["semantic"] = "pressure";
+    conv["note"] = "TP5551 derived";
+    conv["from_raw"] = pressure_bar;
+    float tp_scale = getAdsTpScale(adsChannel);
+    float ma_smoothed = getAdsSmoothedMa(adsChannel);
+    float mv_from_smoothed = ma_smoothed * tp_scale;
+    float pressure_from_smoothed = (mv_from_smoothed / 1000.0f / 10.0f) * DEFAULT_RANGE_BAR;
+    conv["from_filtered"] = pressure_from_smoothed;
+
+    JsonObject meta = a["meta"].to<JsonObject>();
+    JsonObject meta_meas = meta["measurement"].to<JsonObject>();
+    meta_meas["mv"] = mv;
+    meta_meas["ma"] = ma;
+    meta["tp_model"] = "TP5551";
+    meta["tp_scale_mv_per_ma"] = tp_scale;
+    meta["cal_tp_scale_mv_per_ma"] = tp_scale;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    if (notificationMode & NOTIF_MODE_SERIAL) {
+        Serial.print("Notification (serial): ");
+        Serial.println(payload);
     }
+    if (notificationMode & NOTIF_MODE_WEBHOOK) {
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("WiFi not connected, skipping webhook notification.");
+            return;
+        }
+        HTTPClient http;
+        http.begin(HTTP_NOTIFICATION_URL);
+        http.addHeader("Content-Type", "application/json");
+        int code = http.POST(payload);
+        if (code > 0) {
+            Serial.printf("HTTP Response code: %d\n", code);
+            String resp = http.getString();
+            Serial.println(resp);
+        } else {
+            Serial.printf("HTTP Error: %s\n", http.errorToString(code).c_str());
+        }
+        http.end();
+    }
+}
+
+void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[], float smoothedADC[]) {
+    // Attempt to sync time but do not abort sending; include diagnostic fields
+    bool time_ok = ensureTimeSynced();
+    // Build payload according to configured payload type
+    JsonDocDyn doc(4096);
+    doc["timestamp"] = getIsoTimestamp();
+    doc["time_synced"] = time_ok ? 1 : 0;
+    doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
 
     // Top-level RTU and flat `tags` array
     doc["rtu"] = String(getChipId());
-    JsonArray arr = doc.createNestedArray("tags");
+    JsonArray arr = doc["tags"].to<JsonArray>();
     for (int i = 0; i < numSensors; ++i) {
         int sensorIndex = sensorIndices[i];
     JsonObject obj = arr.add<JsonObject>();
@@ -64,26 +164,26 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
         float pressure_from_filtered = (round(smoothed) * cal.scale) + cal.offset;
         float converted = getSmoothedVoltagePressure(sensorIndex);
 
-        JsonObject val = obj.createNestedObject("value");
-        JsonObject rawObj = val.createNestedObject("raw");
+        JsonObject val = obj["value"].to<JsonObject>();
+        JsonObject rawObj = val["raw"].to<JsonObject>();
         rawObj["value"] = raw;
         rawObj["original"] = raw;
         rawObj["effective"] = raw;
         val["filtered"] = smoothed;
     // ADC: omit measurement object; keep scaled/converted only
-            JsonObject scaled = val.createNestedObject("scaled");
+            JsonObject scaled = val["scaled"].to<JsonObject>();
             scaled["value"] = voltage_smoothed_v;
             scaled["unit"] = "volt";
-    JsonObject conv = val.createNestedObject("converted");
+    JsonObject conv = val["converted"].to<JsonObject>();
     conv["value"] = converted;
     conv["unit"] = "bar";
     conv["semantic"] = "pressure";
     conv["from_raw"] = pressure_from_raw;
     conv["from_filtered"] = pressure_from_filtered;
+    // Explicitly include smoothed/filtered converted value
+    conv["from_filtered_value"] = pressure_from_filtered;
+    conv["from_filtered_unit"] = String("bar");
     }
-
-    String jsonPayload;
-    serializeJson(doc, jsonPayload);
 
     // Include ADS1115 A0/A1 channel readings in the same `tags` array
     JsonArray adsArr = doc["tags"].as<JsonArray>();
@@ -105,22 +205,35 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
     float voltage_v = mv / 1000.0f;
     float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
 
-        JsonObject val = a.createNestedObject("value");
-        JsonObject rawA = val.createNestedObject("raw");
+        JsonObject val = a["value"].to<JsonObject>();
+        JsonObject rawA = val["raw"].to<JsonObject>();
         rawA["value"] = raw;
-    JsonObject conv = val.createNestedObject("converted");
+    JsonObject conv = val["converted"].to<JsonObject>();
     conv["value"] = pressure_bar;
     conv["unit"] = "bar";
     conv["semantic"] = "pressure";
     conv["note"] = "derived from TP5551 using tp_scale_mv_per_ma";
-        JsonObject meta = a.createNestedObject("meta");
-        JsonObject meta_meas = meta.createNestedObject("measurement");
+    // Provide from_raw and from_filtered (smoothed) converted pressure for ADS
+    conv["from_raw"] = pressure_bar;
+    float ma_smoothed = getAdsSmoothedMa(ch);
+    float mv_from_smoothed = ma_smoothed * tp_scale;
+    float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
+    float pressure_from_smoothed = (voltage_from_smoothed / 10.0f) * DEFAULT_RANGE_BAR;
+    conv["from_filtered"] = pressure_from_smoothed;
+    JsonObject meta = a["meta"].to<JsonObject>();
+    JsonObject meta_meas = meta["measurement"].to<JsonObject>();
         meta_meas["mv"] = mv;
         meta_meas["ma"] = ma;
         meta["tp_model"] = "TP5551";
-        meta["tp_scale_mv_per_ma"] = tp_scale;
+    meta["tp_scale_mv_per_ma"] = tp_scale;
+    // Expose calibration key for tp_scale under cal_ prefix for consistency
+    meta["cal_tp_scale_mv_per_ma"] = tp_scale;
         meta["ma_smoothed"] = getAdsSmoothedMa(ch);
     }
+#
+    // Now that ADS entries are appended, serialize the final payload
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
 
     // Route according to mode: serial and/or webhook
     if (notificationMode & NOTIF_MODE_SERIAL) {
@@ -173,20 +286,17 @@ uint8_t getNotificationPayloadType() {
 }
 
 void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, float voltage) {
+    // Attempt to sync time but do not abort sending; include diagnostic fields
+    bool time_ok = ensureTimeSynced();
     // Build RTU-grouped `tags` payload for a single sensor
-    DynamicJsonDocument doc(1024);
-    if (rtcFound) {
-        DateTime now = rtc.now();
-        char timestamp[25];
-        sprintf(timestamp, "%04d-%02d-%02dT%02d:%02d:%02d",
-                now.year(), now.month(), now.day(),
-                now.hour(), now.minute(), now.second());
-        doc["timestamp"] = timestamp;
-    }
+    JsonDocDyn doc(1536);
+    doc["timestamp"] = getIsoTimestamp();
+    doc["time_synced"] = time_ok ? 1 : 0;
+    doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
 
     // Top-level `rtu` and flat `tags` array for single-sensor notification
     doc["rtu"] = String(getChipId());
-    JsonArray tags = doc.createNestedArray("tags");
+    JsonArray tags = doc["tags"].to<JsonArray>();
     JsonObject s = tags.add<JsonObject>();
     s["id"] = String("AI") + String(sensorIndex + 1);
     s["port"] = getVoltageSensorPin(sensorIndex);
@@ -194,17 +304,28 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
     s["source"] = "adc";
     s["enabled"] = getSensorEnabled(sensorIndex) ? 1 : 0;
 
-    JsonObject val = s.createNestedObject("value");
-    JsonObject rawObj = val.createNestedObject("raw");
-    rawObj["value"] = rawADC;
+    // Prefer averages from sample store
+    float avgRawF, avgSmoothedF, avgVoltF;
+    int rawToUse = rawADC;
+    float smoothedToUse = smoothedADC;
+    float voltToUse = voltage;
+    if (getAverages(sensorIndex, avgRawF, avgSmoothedF, avgVoltF)) {
+        rawToUse = (int)round(avgRawF);
+        smoothedToUse = avgSmoothedF;
+        voltToUse = avgVoltF;
+    }
+
+    JsonObject val = s["value"].to<JsonObject>();
+    JsonObject rawObj = val["raw"].to<JsonObject>();
+    rawObj["value"] = rawToUse;
     rawObj["original"] = rawADC;
-    rawObj["effective"] = rawADC;
-    val["filtered"] = smoothedADC;
+    rawObj["effective"] = rawToUse;
+    val["filtered"] = smoothedToUse;
     // ADC: omit measurement object; keep scaled/converted only
-    JsonObject scaled = val.createNestedObject("scaled");
+    JsonObject scaled = val["scaled"].to<JsonObject>();
     scaled["value"] = convert010V((int)round(smoothedADC));
     scaled["unit"] = "volt";
-    JsonObject conv = val.createNestedObject("converted");
+    JsonObject conv = val["converted"].to<JsonObject>();
     conv["value"] = voltage; // interpreted as pressure (bar)
     conv["unit"] = "bar";
     struct SensorCalibration cal = getCalibrationForPin(sensorIndex);
@@ -213,8 +334,11 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
     conv["semantic"] = "pressure";
     conv["from_raw"] = pressure_from_raw;
     conv["from_filtered"] = pressure_from_filtered;
+    // Also expose the smoothed converted value for consumers
+    conv["from_filtered_value"] = pressure_from_filtered;
+    conv["from_filtered_unit"] = String("bar");
 
-    JsonObject meta = s.createNestedObject("meta");
+    JsonObject meta = s["meta"].to<JsonObject>();
     meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
     meta["cal_span_raw_adc"] = cal.spanRawAdc;
     meta["cal_zero_pressure_value"] = cal.zeroPressureValue;

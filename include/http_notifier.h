@@ -20,4 +20,7 @@ uint8_t getNotificationPayloadType();
 // Helper to route a single sensor notification according to current mode
 void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, float voltage);
 
+// Send notification for ADS channel (TP5551 current sensor). `adsChannel` is 0..n
+void sendAdsNotification(int adsChannel, int16_t rawAds, float mv, float ma);
+
 #endif // HTTP_NOTIFIER_H

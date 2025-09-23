@@ -1,0 +1,36 @@
+{
+  "wifi": {
+    "ssid": "Perumda Tirta Patriot",
+    "password": "1sampai8",
+    "ap_name": "adaAP",
+    "fallback_ssid": "ada-x-fallback",
+    "fallback_pass": "fallback123"
+  },
+  "mdns": { "hostname": "ada-x" },
+  "ota": { "port": 3232, "password": "Mar9aMulya" },
+  "timing": {
+    "sensor_read_interval_ms": 5000,
+    "print_time_interval_ms": 5000,
+    "ema_alpha": 0.05
+  },
+  "defaults": {
+    "sensor_enabled": true,
+    "sensor_notification_interval_ms": 300000
+  },
+  "ntp": { "timezone": "GMT-7", "sync_interval_ms": 86400000, "retry_interval_ms": 300000 },
+  "prefs": { "rtc_enabled": 1, "sd_enabled": 1 },
+  "notification": {
+    "url": "https://pms.tirtapatriot.net/flows/trigger/9B18A953-07DF-4521-B9F0-6B4CF968DB6B",
+    "interval_ms": 300000,
+    "mode": 2,
+    "payload_type": 1
+  },
+  "current_sensor": {
+    "init_ma": 4.0,
+    "range_bar": 10.0,
+    "range_mm": 101971.6213,
+    "density_water": 1.0,
+    "shunt_ohm": 119.0,
+    "amp_gain": 2.0
+  }
+}

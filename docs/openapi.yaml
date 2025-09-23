@@ -282,14 +282,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  num_sensors:
-                    type: integer
-                  sensors:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/SensorReading'
+                $ref: '#/components/schemas/SensorReadingsResponse'
 
   /notifications/config:
     get:
@@ -344,6 +337,7 @@ paths:
                 example:
                   status: "success"
                   message: "Batch notification triggered"
+                  timestamp: "2025-09-23T12:34:56"
         '400':
           description: Invalid request
           content:
@@ -419,17 +413,103 @@ components:
       properties:
         sensor_index:
           type: integer
+        sensor_id:
+          type: string
         sensor_pin:
           type: integer
         enabled:
           type: integer
         notification_interval_ms:
           type: integer
+
+    SensorReadingsResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          description: ISO datetime (when RTC present) or epoch string
+        rtu:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        tags_total:
+          type: integer
+
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+        port:
+          type: integer
+        index:
+          type: integer
+        source:
+          type: string
+          description: 'e.g. "adc" or "ads1115"'
+        enabled:
+          type: integer
+        value:
+          $ref: '#/components/schemas/ValueObj'
+        meta:
+          type: object
+          description: 'Sensor metadata and calibration info. ADC cal fields: cal_zero_raw_adc etc. ADS will include cal_tp_scale_mv_per_ma.'
+
+    ValueObj:
+      type: object
+      properties:
+        raw:
+          type: number
+          description: raw sensor reading (ADC count or ADS raw)
+        filtered:
+          type: number
+          description: smoothed/filtered raw reading
+        scaled:
+          $ref: '#/components/schemas/ScaledObj'
+        converted:
+          $ref: '#/components/schemas/ConvertedObj'
+
+    ScaledObj:
+      type: object
+      properties:
+        value:
+          type: number
+        unit:
+          type: string
+
+    ConvertedObj:
+      type: object
+      properties:
+        value:
+          type: number
+        unit:
+          type: string
+        semantic:
+          type: string
+        from_raw:
+          type: number
+        from_filtered:
+          type: number
+
+    NotificationPayload:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        rtu:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        tags_total:
+          type: integer
       example:
-        sensor_index: 0
-        sensor_pin: 34
-        enabled: 1
-        notification_interval_ms: 60000
+        timestamp: "2025-09-23T12:34:56"
+        rtu: "press-32"
+        tags_total: 1
 
     SensorConfigUpdate:
       type: object

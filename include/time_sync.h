@@ -16,6 +16,7 @@ bool isRtcPresent();
 time_t getRtcEpoch();
 bool isPendingRtcSync();
 String getLastNtpSuccessIso();
+String getIsoTimestamp();
 
 // RTC enable/disable control
 void setRtcEnabled(bool enabled);
@@ -24,5 +25,8 @@ bool getRtcEnabled();
 // Extern declarations for global variables used by time sync
 extern RTC_DS3231 rtc;
 extern bool rtcFound;
+
+// Expose whether the RTC has lost power since last battery backup
+bool isRtcLostPower();
 
 #endif // TIME_SYNC_H

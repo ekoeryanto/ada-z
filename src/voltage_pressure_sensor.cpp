@@ -20,6 +20,8 @@ static float smoothedADC[NUM_VOLTAGE_SENSORS];
 static int consecutiveSaturations[NUM_VOLTAGE_SENSORS];
 // Array to store calibration data for each sensor
 static SensorCalibration voltageSensorCalibrations[NUM_VOLTAGE_SENSORS];
+// Runtime-configurable ADC per-read sample count
+static int adcNumSamples = 3; // default
 
 float convert010V(int adc) {
     // Convert raw ADC to millivolts using characterization
@@ -148,16 +150,20 @@ void setupVoltagePressureSensor() {
     loadVoltagePressureCalibration(); // Load calibration on startup
 
     // Seed smoothed ADCs using vendor-style averaging to match sample code
-    const int NUM_SAMPLES = 6; // reduced for faster debug feedback
+    // Read persisted value if present
+    Preferences ptemp;
+    ptemp.begin("adc_cfg", false);
+    adcNumSamples = ptemp.getInt("num_samples", adcNumSamples);
+    ptemp.end();
     const int SAMPLE_DELAY_MS = 2;
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
         int pin = VOLTAGE_SENSOR_PINS[i];
         long sum = 0;
-        for (int s = 0; s < NUM_SAMPLES; ++s) {
+        for (int s = 0; s < adcNumSamples; ++s) {
             sum += analogRead(pin);
             delay(SAMPLE_DELAY_MS);
         }
-        int avg = (int)(sum / NUM_SAMPLES);
+        int avg = (int)(sum / adcNumSamples);
         smoothedADC[i] = (float)avg;
         consecutiveSaturations[i] = (avg >= 4095) ? 1 : 0;
     }
@@ -219,7 +225,7 @@ void updateVoltagePressureSensor(int pinIndex) {
         return;
     }
     // Vendor-style averaging: take NUM_SAMPLES samples with short delay, compute average
-    const int NUM_SAMPLES = 6; // reduced for faster debug feedback
+    int NUM_SAMPLES = adcNumSamples; // runtime-configurable
     const int SAMPLE_DELAY_MS = 2;
     long sum = 0;
     int rawADC = 0;
@@ -254,4 +260,26 @@ bool isPinSaturated(int pinIndex) {
 float getSmoothedADC(int pinIndex) {
     if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return 0.0;
     return smoothedADC[pinIndex];
+}
+
+// Runtime getters/setters for ADC per-read sample count
+int getAdcNumSamples() {
+    extern Preferences preferences;
+    Preferences p;
+    p.begin("adc_cfg", true);
+    int v = p.getInt("num_samples", adcNumSamples);
+    p.end();
+    return v;
+}
+
+void setAdcNumSamples(int n) {
+    if (n < 1) return;
+    extern Preferences preferences;
+    Preferences p;
+    p.begin("adc_cfg", false);
+    p.putInt("num_samples", n);
+    p.end();
+    // Update runtime variable
+    extern int adcNumSamples;
+    adcNumSamples = n;
 }
