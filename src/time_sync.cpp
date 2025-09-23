@@ -36,14 +36,14 @@ void syncNtp(bool updateRtcAfter) {
 }
 
 time_t getLastNtpSuccessEpoch() {
-    preferences.begin(PREF_TIME_NS, true);
+    preferences.begin(PREF_TIME_NS, false);
     unsigned long val = preferences.getULong(PREF_LAST_NTP_EPOCH, 0);
     preferences.end();
     return (time_t)val;
 }
 
 String getLastNtpSuccessIso() {
-    preferences.begin(PREF_TIME_NS, true);
+    preferences.begin(PREF_TIME_NS, false);
     String s = preferences.getString(PREF_LAST_NTP_ISO, "");
     preferences.end();
     return s;
@@ -80,7 +80,7 @@ void setRtcEnabled(bool enabled) {
 
 bool getRtcEnabled() {
     // read persisted value if preferences available
-    preferences.begin(PREF_TIME_NS, true);
+    preferences.begin(PREF_TIME_NS, false);
     int v = preferences.getInt(PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED);
     preferences.end();
     rtcEnabled = (v != 0);
@@ -139,7 +139,7 @@ void printCurrentTime() {
 
 void setupTimeSync() {
     // Load persisted RTC enabled flag
-    preferences.begin(PREF_TIME_NS, true);
+    preferences.begin(PREF_TIME_NS, false);
     int v = preferences.getInt(PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED);
     preferences.end();
     rtcEnabled = (v != 0);

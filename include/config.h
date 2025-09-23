@@ -17,7 +17,7 @@
 #define OTA_PASSWORD "Mar9aMulya"
 
 // Sensor timing defaults
-#define SENSOR_READ_INTERVAL 60000 // ms
+#define SENSOR_READ_INTERVAL 5000 // ms (shortened for debugging)
 #define EMA_ALPHA 0.05f
 #define PRINT_TIME_INTERVAL 5000 // ms
 
@@ -56,8 +56,16 @@ extern const char* NTP_SERVERS[];
 #define PREF_SENSOR_INTERVAL_PREFIX "sensor_iv_"
 
 // Defaults for 4-20mA current pressure sensors (ADS1115)
+// This project uses 0-10 bar transmitters by default. For water,
+// 1 bar ≈ 10.19716213 meters (10197.16213 mm). Therefore full-scale
+// depth for 10 bar is ~101971.6213 mm. `DEFAULT_DENSITY_WATER` is
+// treated as specific gravity (1.0 = water). If you use different
+// fluids, set density to the fluid's specific gravity.
 #define DEFAULT_CURRENT_INIT_MA 4.00f
-#define DEFAULT_RANGE_MM 5000.0f
+// Full-scale range in bars (default transmitter is 0-10 bar)
+#define DEFAULT_RANGE_BAR 10.0f
+// Full-scale range in millimetres of water column for DEFAULT_RANGE_BAR
+#define DEFAULT_RANGE_MM 101971.6213f
 #define DEFAULT_DENSITY_WATER 1.0f
 #define DEFAULT_SHUNT_OHM 119.0f
 #define DEFAULT_AMP_GAIN 2.0f

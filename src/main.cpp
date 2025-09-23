@@ -22,6 +22,9 @@
 #include "web_api.h"
 #include "sensors_config.h"
 #include "current_pressure_sensor.h"
+#include "preferences_helper.h"
+
+#include "nvs_flash.h"
 
 // Globals
 
@@ -54,6 +57,17 @@ void setup() {
     Serial.begin(115200);
     Wire.begin(I2C_SDA, I2C_SCL);
 
+    // Ensure NVS is initialized before any Preferences usage
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs erase
+        nvs_flash_erase();
+        nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK) {
+        Serial.printf("[WARN] NVS init failed: 0x%08x\n", nvs_err);
+    }
+
     // Initialize ADS1115 for water pressure current sensors on A0/A1 (raw readings, no smoothing)
     if (!setupCurrentPressureSensor(ADS1115_ADDR)) {
         Serial.println("Warning: ADS1115 not detected — A0/A1 current sensors will be unavailable");
@@ -68,6 +82,8 @@ void setup() {
     analogSetPinAttenuation(AI2_PIN, ADC_11db);
     analogSetPinAttenuation(AI3_PIN, ADC_11db);
 
+    // Initialize ADC calibration and voltage sensor after attenuation is set
+    initAdcCalibration();
     setupVoltagePressureSensor(); // Initialize voltage pressure sensor (seed smoothed values after ADC configured)
 
     // Load per-sensor enable flags and notification intervals from Preferences
@@ -78,7 +94,7 @@ void setup() {
     sensorLastNotificationMillis = new unsigned long[numSensors];
 
     Preferences p;
-    p.begin("sensors", true);
+    safePreferencesBegin(p, "sensors");
     for (int i = 0; i < numSensors; ++i) {
         String enKey = String(PREF_SENSOR_ENABLED_PREFIX) + String(i);
         String ivKey = String(PREF_SENSOR_INTERVAL_PREFIX) + String(i);
@@ -114,7 +130,6 @@ void setup() {
     Serial.println("Ready");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
-    MDNS.addService("http", "tcp", 80);
     // Start HTTP API server
     setupWebServer();
 }
@@ -201,8 +216,10 @@ void loop() {
             float smoothed = getSmoothedADC(i);
             float volt = getSmoothedVoltagePressure(i);
 
-            dataString += "," + String(raw) + "," + String(smoothed) + "," + String(volt);
-            Serial.printf("AI%d Pin %d (raw): %d | (smoothed): %.2f | Voltage: %.3f V\n", i+1, getVoltageSensorPin(i), raw, smoothed, volt);
+            int mv_raw = adcRawToMv(raw);
+            int mv_sm = adcRawToMv((int)round(smoothed));
+            dataString += "," + String(raw) + "," + String(smoothed) + "," + String(volt) + "," + String(mv_raw) + "," + String(mv_sm);
+            Serial.printf("AI%d Pin %d (raw): %d | (smoothed): %.2f | Voltage: %.3f V | mV_raw: %d mV | mV_smoothed: %d mV\n", i+1, getVoltageSensorPin(i), raw, smoothed, volt, mv_raw, mv_sm);
 
             if (sensorEnabled && sensorEnabled[i]) {
                 unsigned long interval = sensorNotificationInterval ? sensorNotificationInterval[i] : HTTP_NOTIFICATION_INTERVAL;

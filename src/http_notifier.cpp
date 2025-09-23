@@ -13,6 +13,9 @@
 #include "calibration_keys.h"
 #include <Preferences.h>
 #include "device_id.h"
+#include "current_pressure_sensor.h"
+#include "pins_config.h"
+#include "sensors_config.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -40,43 +43,84 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
         doc["timestamp"] = timestamp;
     }
 
-    JsonArray arr = doc["sensors"].to<JsonArray>();
+    // Top-level RTU and flat `tags` array
+    doc["rtu"] = String(getChipId());
+    JsonArray arr = doc.createNestedArray("tags");
     for (int i = 0; i < numSensors; ++i) {
         int sensorIndex = sensorIndices[i];
-        JsonObject obj = arr.add<JsonObject>();
-        obj["sensor_index"] = sensorIndex;
-        obj["sensor_pin"] = getVoltageSensorPin(sensorIndex);
-    obj["sensor_id"] = String("AI") + String(sensorIndex+1);
-    // Include device chip identifier (compact efuse-based ID)
-    obj["chip_id"] = getChipId();
-        // Compute the same fields as /sensors/readings
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = String("AI") + String(sensorIndex + 1);
+    obj["port"] = getVoltageSensorPin(sensorIndex);
+    obj["index"] = sensorIndex;
+    obj["source"] = "adc";
+    obj["enabled"] = getSensorEnabled(sensorIndex) ? 1 : 0;
+
+        // Compute same metric as /sensors/readings
         int raw = rawADC[i];
         float smoothed = smoothedADC[i];
-        float voltage_raw_v = convert010V(raw);
         float voltage_smoothed_v = convert010V(round(smoothed));
-        float pressure_from_raw = 0.0;
-        float pressure_from_smoothed = 0.0;
         struct SensorCalibration cal = getCalibrationForPin(sensorIndex);
-        // Apply ADC-based calibration (pressure = rawAdc * scale + offset)
-        pressure_from_raw = (raw * cal.scale) + cal.offset;
-        pressure_from_smoothed = (round(smoothed) * cal.scale) + cal.offset;
-        float pressure_value = getSmoothedVoltagePressure(sensorIndex);
+        float pressure_from_raw = (raw * cal.scale) + cal.offset;
+        float pressure_from_filtered = (round(smoothed) * cal.scale) + cal.offset;
+        float converted = getSmoothedVoltagePressure(sensorIndex);
 
-        obj["voltage_raw"] = voltage_raw_v;
-        obj["voltage_smoothed"] = voltage_smoothed_v;
-        obj["voltage"] = voltage_smoothed_v;
-        obj["pressure_from_raw"] = pressure_from_raw;
-        obj["pressure_from_smoothed"] = pressure_from_smoothed;
-        obj["pressure_value"] = pressure_value;
-        obj["pressure_unit"] = "bar";
-        obj["pressure_bar"] = pressure_value;
-        // Legacy fields
-        obj["raw_adc"] = raw;
-        obj["smoothed_adc"] = smoothed;
+        JsonObject val = obj.createNestedObject("value");
+        JsonObject rawObj = val.createNestedObject("raw");
+        rawObj["value"] = raw;
+        rawObj["original"] = raw;
+        rawObj["effective"] = raw;
+        val["filtered"] = smoothed;
+    // ADC: omit measurement object; keep scaled/converted only
+            JsonObject scaled = val.createNestedObject("scaled");
+            scaled["value"] = voltage_smoothed_v;
+            scaled["unit"] = "volt";
+    JsonObject conv = val.createNestedObject("converted");
+    conv["value"] = converted;
+    conv["unit"] = "bar";
+    conv["semantic"] = "pressure";
+    conv["from_raw"] = pressure_from_raw;
+    conv["from_filtered"] = pressure_from_filtered;
     }
 
     String jsonPayload;
     serializeJson(doc, jsonPayload);
+
+    // Include ADS1115 A0/A1 channel readings in the same `tags` array
+    JsonArray adsArr = doc["tags"].as<JsonArray>();
+    for (int ch = 0; ch <= 1; ++ch) {
+    JsonObject a = adsArr.add<JsonObject>();
+    int idx = numSensors + ch;
+    a["id"] = String("ADS_A") + String(ch);
+    a["port"] = ch;
+    a["index"] = idx;
+    a["source"] = "ads1115";
+    a["adc_chip"] = String("0x") + String((int)ADS1115_ADDR, HEX);
+
+        int16_t raw = readAdsRaw(ch);
+        float mv = adsRawToMv(raw);
+        float tp_scale = getAdsTpScale(ch);
+        float ma = readAdsMa(ch, DEFAULT_SHUNT_OHM, DEFAULT_AMP_GAIN);
+        float depth_mm = computeDepthMm(ma, DEFAULT_CURRENT_INIT_MA, DEFAULT_RANGE_MM, DEFAULT_DENSITY_WATER);
+    // Map scaled voltage directly to pressure assuming sensor outputs 0-10V -> 0-DEFAULT_RANGE_BAR
+    float voltage_v = mv / 1000.0f;
+    float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
+
+        JsonObject val = a.createNestedObject("value");
+        JsonObject rawA = val.createNestedObject("raw");
+        rawA["value"] = raw;
+    JsonObject conv = val.createNestedObject("converted");
+    conv["value"] = pressure_bar;
+    conv["unit"] = "bar";
+    conv["semantic"] = "pressure";
+    conv["note"] = "derived from TP5551 using tp_scale_mv_per_ma";
+        JsonObject meta = a.createNestedObject("meta");
+        JsonObject meta_meas = meta.createNestedObject("measurement");
+        meta_meas["mv"] = mv;
+        meta_meas["ma"] = ma;
+        meta["tp_model"] = "TP5551";
+        meta["tp_scale_mv_per_ma"] = tp_scale;
+        meta["ma_smoothed"] = getAdsSmoothedMa(ch);
+    }
 
     // Route according to mode: serial and/or webhook
     if (notificationMode & NOTIF_MODE_SERIAL) {
@@ -129,8 +173,8 @@ uint8_t getNotificationPayloadType() {
 }
 
 void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, float voltage) {
-    // Build simple JSON depending on payload type and route via serial/webhook
-    DynamicJsonDocument doc(512);
+    // Build RTU-grouped `tags` payload for a single sensor
+    DynamicJsonDocument doc(1024);
     if (rtcFound) {
         DateTime now = rtc.now();
         char timestamp[25];
@@ -139,18 +183,45 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
                 now.hour(), now.minute(), now.second());
         doc["timestamp"] = timestamp;
     }
-        JsonObject obj = doc["sensor"].to<JsonObject>();
-        obj["sensor_index"] = sensorIndex;
-        obj["sensor_pin"] = getVoltageSensorPin(sensorIndex);
-    obj["sensor_id"] = String("AI") + String(sensorIndex+1);
-    obj["chip_id"] = getChipId();
-        obj["pressure_unit"] = "bar";
-        obj["pressure_bar"] = voltage;
-        // Keep legacy fields
-        obj["rawADC"] = rawADC;
-        obj["smoothedADC"] = smoothedADC;
-        obj["voltage"] = voltage;
-    
+
+    // Top-level `rtu` and flat `tags` array for single-sensor notification
+    doc["rtu"] = String(getChipId());
+    JsonArray tags = doc.createNestedArray("tags");
+    JsonObject s = tags.add<JsonObject>();
+    s["id"] = String("AI") + String(sensorIndex + 1);
+    s["port"] = getVoltageSensorPin(sensorIndex);
+    s["index"] = sensorIndex;
+    s["source"] = "adc";
+    s["enabled"] = getSensorEnabled(sensorIndex) ? 1 : 0;
+
+    JsonObject val = s.createNestedObject("value");
+    JsonObject rawObj = val.createNestedObject("raw");
+    rawObj["value"] = rawADC;
+    rawObj["original"] = rawADC;
+    rawObj["effective"] = rawADC;
+    val["filtered"] = smoothedADC;
+    // ADC: omit measurement object; keep scaled/converted only
+    JsonObject scaled = val.createNestedObject("scaled");
+    scaled["value"] = convert010V((int)round(smoothedADC));
+    scaled["unit"] = "volt";
+    JsonObject conv = val.createNestedObject("converted");
+    conv["value"] = voltage; // interpreted as pressure (bar)
+    conv["unit"] = "bar";
+    struct SensorCalibration cal = getCalibrationForPin(sensorIndex);
+    float pressure_from_raw = (rawADC * cal.scale) + cal.offset;
+    float pressure_from_filtered = (round(smoothedADC) * cal.scale) + cal.offset;
+    conv["semantic"] = "pressure";
+    conv["from_raw"] = pressure_from_raw;
+    conv["from_filtered"] = pressure_from_filtered;
+
+    JsonObject meta = s.createNestedObject("meta");
+    meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
+    meta["cal_span_raw_adc"] = cal.spanRawAdc;
+    meta["cal_zero_pressure_value"] = cal.zeroPressureValue;
+    meta["cal_span_pressure_value"] = cal.spanPressureValue;
+    meta["cal_scale"] = cal.scale;
+    meta["cal_offset"] = cal.offset;
+
     String payload;
     serializeJson(doc, payload);
 

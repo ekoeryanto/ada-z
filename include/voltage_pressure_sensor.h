@@ -6,6 +6,9 @@
 // Function to convert ADC value to voltage
 float convert010V(int adc);
 
+// Convert ADC raw reading to millivolts using esp_adc_cal
+int adcRawToMv(int raw);
+
 // Function to get smoothed voltage pressure sensor reading for a specific sensor
 float getSmoothedVoltagePressure(int pinIndex);
 
@@ -26,6 +29,9 @@ int getNumVoltageSensors();
 
 // Function to initialize voltage pressure sensor
 void setupVoltagePressureSensor();
+
+// Initialize ADC characterization (esp_adc_cal) for accurate mV conversion
+void initAdcCalibration();
 
 // Function to update voltage pressure sensor reading for a specific sensor (to be called in loop)
 void updateVoltagePressureSensor(int pinIndex);

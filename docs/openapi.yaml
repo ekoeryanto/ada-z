@@ -43,7 +43,7 @@ paths:
                     type: integer
                   num_sensors_configured:
                     type: integer
-                  num_sensors_total:
+                  tags_total:
                     type: integer
                 example:
                   ip: "192.168.1.123"
@@ -54,7 +54,7 @@ paths:
                   hostname: "press-32"
                   uptime_seconds: 3600
                   num_sensors_configured: 3
-                  num_sensors_total: 3
+                  tags_total: 1
 
   /config:
     get:

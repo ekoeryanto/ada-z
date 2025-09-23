@@ -4,6 +4,11 @@
 
 #include "sensor_calibration_types.h" // For SensorCalibration struct
 
+#include "esp_adc_cal.h"
+
+// ADC calibration handle and characteristics (declared early so conversion helpers can use it)
+static esp_adc_cal_characteristics_t adc_chars;
+
 // Define the voltage pressure sensor pins
 const int VOLTAGE_SENSOR_PINS[] = {AI1_PIN, AI2_PIN, AI3_PIN};
 const int NUM_VOLTAGE_SENSORS = sizeof(VOLTAGE_SENSOR_PINS) / sizeof(VOLTAGE_SENSOR_PINS[0]);
@@ -17,9 +22,15 @@ static int consecutiveSaturations[NUM_VOLTAGE_SENSORS];
 static SensorCalibration voltageSensorCalibrations[NUM_VOLTAGE_SENSORS];
 
 float convert010V(int adc) {
-    float Vadc = adc / 4095.0f * 3.3f;
-    float Volt = Vadc / 3.3f * 10.0f;
+    // Convert raw ADC to millivolts using characterization
+    int mv = esp_adc_cal_raw_to_voltage(adc, &adc_chars); // returns mV for ADC input (0..~3300)
+    // Convert mV of ADC pin (after divider) to equivalent 0-10V value
+    // We assume the voltage divider maps 0-10V -> 0-3.3V at ADC input.
+    // So scale factor is 10.0 / 3.3
+    float Volt = ((float)mv / 1000.0f) * (10.0f / 3.3f);
+
     float Vcal = 0.0f;
+    float Vadc = (float)mv / 1000.0f;
 
     if (Vadc <= 0.0f) {
         Vcal = 0.0f;
@@ -34,6 +45,10 @@ float convert010V(int adc) {
     }
 
     return Vcal;
+}
+
+int adcRawToMv(int raw) {
+    return esp_adc_cal_raw_to_voltage(raw, &adc_chars);
 }
 
 float getSmoothedVoltagePressure(int pinIndex) {
@@ -70,9 +85,21 @@ extern Preferences preferences; // Declare extern for Preferences object
 #include "calibration_keys.h" // For CAL_ZERO_RAW_ADC, etc.
 
 
+// Initialize ADC characterization (esp_adc_cal) for accurate conversions
+void initAdcCalibration() {
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
+        Serial.println("ADC calibrated using eFuse Vref");
+    } else if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP) {
+        Serial.println("ADC calibrated using Two Point");
+    } else {
+        Serial.println("ADC characterization used default Vref (approx)");
+    }
+}
 
 void loadVoltagePressureCalibration() {
-    preferences.begin(CAL_NAMESPACE, true); // Use the same namespace as web_api.cpp
+    // Open calibration namespace writable so NVS key creation doesn't log NOT_FOUND
+    preferences.begin(CAL_NAMESPACE, false); // Use the same namespace as web_api.cpp
 
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; i++) {
         String pinKey = String(VOLTAGE_SENSOR_PINS[i]); // Create key based on pin number
@@ -121,8 +148,8 @@ void setupVoltagePressureSensor() {
     loadVoltagePressureCalibration(); // Load calibration on startup
 
     // Seed smoothed ADCs using vendor-style averaging to match sample code
-    const int NUM_SAMPLES = 20;
-    const int SAMPLE_DELAY_MS = 5;
+    const int NUM_SAMPLES = 6; // reduced for faster debug feedback
+    const int SAMPLE_DELAY_MS = 2;
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
         int pin = VOLTAGE_SENSOR_PINS[i];
         long sum = 0;
@@ -192,8 +219,8 @@ void updateVoltagePressureSensor(int pinIndex) {
         return;
     }
     // Vendor-style averaging: take NUM_SAMPLES samples with short delay, compute average
-    const int NUM_SAMPLES = 20;
-    const int SAMPLE_DELAY_MS = 5;
+    const int NUM_SAMPLES = 6; // reduced for faster debug feedback
+    const int SAMPLE_DELAY_MS = 2;
     long sum = 0;
     int rawADC = 0;
     for (int s = 0; s < NUM_SAMPLES; ++s) {

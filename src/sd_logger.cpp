@@ -16,7 +16,7 @@ static Preferences sdPreferences;
 
 void setupSdLogger() {
     // Load persisted SD enabled flag
-    sdPreferences.begin("sd", true);
+    sdPreferences.begin("sd", false);
     sdEnabled = sdPreferences.getInt(PREF_SD_ENABLED, DEFAULT_SD_ENABLED) != 0;
     sdPreferences.end();
 
@@ -69,7 +69,7 @@ void setSdEnabled(bool enabled) {
 }
 
 bool getSdEnabled() {
-    sdPreferences.begin("sd", true);
+    sdPreferences.begin("sd", false);
     int v = sdPreferences.getInt(PREF_SD_ENABLED, DEFAULT_SD_ENABLED);
     sdPreferences.end();
     sdEnabled = (v != 0);
