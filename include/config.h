@@ -9,7 +9,7 @@
 #define WM_AP_PASS   "adaAPpass"
 
 // mDNS
-#define MDNS_HOSTNAME "ada-x"
+#define MDNS_HOSTNAME "ada-z"
 
 // OTA
 #define OTA_PORT     3232

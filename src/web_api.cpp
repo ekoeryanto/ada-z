@@ -15,14 +15,6 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
 #pragma GCC diagnostic pop
-#if defined(ARDUINOJSON_VERSION_MAJOR)
-// Alias for DynamicJsonDocument to use a short convenient name without
-// conflicting with ArduinoJson's `JsonDocument` symbol.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-using JsonDocDyn = DynamicJsonDocument;
-#pragma GCC diagnostic pop
-#endif
 #include <Preferences.h> // For persistent storage
 #include "preferences_helper.h"
 #include "json_helper.h"
@@ -93,7 +85,7 @@ void handleConfig() {
         Serial.print("Received config POST: ");
         Serial.println(body);
 
-                JsonDocDyn doc(body.length() + 1);
+                JsonDocDyn doc(1024);
         DeserializationError error = deserializeJson(doc, body);
 
         if (error) {
@@ -114,7 +106,7 @@ void handleConfig() {
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Config received\"}");
     } else {
         // Handle GET request for current config
-            JsonDocDyn doc(512);
+            JsonDocDyn doc(1024);
         // doc["http_notification_url"] = HTTP_NOTIFICATION_URL; // Example: Send current URL
         // Add other config parameters to send
 
@@ -153,7 +145,7 @@ void handleCalibrate() {
         Serial.print("Received calibrate POST: ");
         Serial.println(body);
 
-                JsonDocDyn doc(body.length() + 1);
+                JsonDocDyn doc(1024);
         DeserializationError error = deserializeJson(doc, body);
 
         if (error) {
@@ -233,7 +225,7 @@ void handleCalibrate() {
         }
 
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-            JsonDocDyn doc(256);
+            JsonDocDyn doc(1024);
         doc["pin_index"] = pinIndex;
         doc["pin_number"] = getVoltageSensorPin(pinIndex);
         doc["sensor_id"] = String("AI") + String(pinIndex + 1);
@@ -269,7 +261,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"ok\", \"message\":\"NTP sync triggered\"}");
     });
     server->on("/time/status", HTTP_GET, []() {
-    JsonDocDyn doc(512);
+    JsonDocDyn doc(1024);
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
@@ -431,7 +423,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(2048);
+    JsonDocDyn resp(512);
     JsonArray results = resp["results"].to<JsonArray>();
 
         for (auto const& kv : targets) {
@@ -491,7 +483,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(1024);
+    JsonDocDyn resp(512);
     JsonArray results = resp["results"].to<JsonArray>();
 
         for (auto const& kv : targets) {
@@ -577,7 +569,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(2048);
+    JsonDocDyn resp(512);
     JsonArray results = resp["results"].to<JsonArray>();
 
         // For each target, measure current smoothed ADC and save as span
@@ -618,7 +610,7 @@ void setupWebServer(int port /*= 80*/) {
     });
     server->on("/calibrate", handleCalibrate);
     server->on("/calibrate/all", HTTP_GET, []() {
-    JsonDocDyn doc(512);
+    JsonDocDyn doc(1024);
         for (int i = 0; i < getNumVoltageSensors(); ++i) {
             struct SensorCalibration cal = getCalibrationForPin(i);
             JsonObject obj = doc[String(i)].to<JsonObject>();
@@ -699,7 +691,7 @@ void setupWebServer(int port /*= 80*/) {
         const int ads_channels = 2; // currently reporting ADS1115 ch 0..1
         String fromUnit = "";
         if (server->hasArg("convert_from")) fromUnit = server->arg("convert_from");
-    JsonDocDyn doc(8192);
+    JsonDocDyn doc(256);
         // Add normalized ISO timestamp using time_sync helper
         doc["timestamp"] = getIsoTimestamp();
         // Expose the RTU at top-level and create a flat `tags` array of sensor objects
@@ -825,7 +817,7 @@ void setupWebServer(int port /*= 80*/) {
     int mode = p.getInt(PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
     int payload = p.getInt(PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);
     p.end();
-    JsonDocDyn doc(128);
+    JsonDocDyn doc(512);
     doc["mode"] = mode;
     doc["payload_type"] = payload;
         String resp;
@@ -836,7 +828,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/notifications/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
     String body = server->arg("plain");
-    JsonDocDyn doc(128);
+    JsonDocDyn doc(256);
     DeserializationError err = deserializeJson(doc, body);
     if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -932,7 +924,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // ADC smoothing/runtime sample-store configuration
     server->on("/adc/config", HTTP_GET, []() {
-    JsonDocDyn doc(256);
+    JsonDocDyn doc(128);
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
         String resp;
@@ -980,7 +972,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/ads/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(512);
+    JsonDocDyn doc(256);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         if (!doc["channels"].is<JsonArray>()) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing channels array\"}"); return; }

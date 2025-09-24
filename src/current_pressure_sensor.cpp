@@ -64,9 +64,13 @@ int16_t readAdsRaw(uint8_t channel) {
 
 float adsRawToMv(int16_t raw) {
     if (!adsInitialized) return 0.0f;
+    // Prevent tiny negative raw readings (can occur when input floats slightly below ground)
+    if (raw < 0) raw = 0;
     // Use library helper which considers configured gain
     float volts = ads.computeVolts(raw); // volts
-    return volts * 1000.0f; // mV
+    float mv = volts * 1000.0f; // mV
+    if (mv < 0.0f) mv = 0.0f;
+    return mv;
 }
 
 // Read current in mA using shunt resistor and amplifier gain
@@ -95,10 +99,11 @@ float readAdsMa(uint8_t channel, float shunt_ohm, float amp_gain) {
     float tp_scale = safeGetFloat(p, skey, 238.0f);
     p.end();
         if (tp_scale <= 0.0f) return 0.0f;
-        float m = mv / tp_scale; // mA
+    float m = mv / tp_scale; // mA
+    if (m < 0.0f) m = 0.0f; // avoid tiny negative currents from floating inputs
         // Push into median buffer
-        int idx = adsBufIdx[channel] % ADS_MAX_BUF;
-        adsBuf[channel][idx] = (int16_t)round(m * 1000.0f); // store as fixed mA*1000
+    int idx = adsBufIdx[channel] % ADS_MAX_BUF;
+    adsBuf[channel][idx] = (int16_t)round(m * 1000.0f); // store as fixed mA*1000
         adsBufIdx[channel] = (adsBufIdx[channel] + 1) % ADS_MAX_BUF;
         if (adsBufCount[channel] < adsNumAvg) adsBufCount[channel]++;
 

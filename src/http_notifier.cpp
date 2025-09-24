@@ -6,12 +6,6 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
 #pragma GCC diagnostic pop
-#if defined(ARDUINOJSON_VERSION_MAJOR)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-using JsonDocDyn = DynamicJsonDocument;
-#pragma GCC diagnostic pop
-#endif
 #include <RTClib.h> // For DateTime object
 #include "time_sync.h" // For extern declarations of rtc and rtcFound
 #include "voltage_pressure_sensor.h"
@@ -23,6 +17,7 @@ using JsonDocDyn = DynamicJsonDocument;
 #include "pins_config.h"
 #include "sensors_config.h"
 #include "sample_store.h"
+#include "json_helper.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -70,7 +65,7 @@ void sendHttpNotification(int sensorIndex, int rawADC, float smoothedADC, float 
 void sendAdsNotification(int adsChannel, int16_t rawAds, float mv, float ma) {
     // Attempt to sync time but do not abort sending; include diagnostic fields
     bool time_ok = ensureTimeSynced();
-    JsonDocDyn doc(1536);
+    JsonDocDyn doc(512);
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
@@ -138,7 +133,7 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
     // Attempt to sync time but do not abort sending; include diagnostic fields
     bool time_ok = ensureTimeSynced();
     // Build payload according to configured payload type
-    JsonDocDyn doc(4096);
+    JsonDocDyn doc(1024);
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
@@ -289,7 +284,7 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
     // Attempt to sync time but do not abort sending; include diagnostic fields
     bool time_ok = ensureTimeSynced();
     // Build RTU-grouped `tags` payload for a single sensor
-    JsonDocDyn doc(1536);
+    JsonDocDyn doc(1024);
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
