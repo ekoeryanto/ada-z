@@ -60,6 +60,51 @@ void logSensorDataToSd(String data) {
     }
 }
 
+// Append an error message with timestamp to /error.log
+#include "time_sync.h"
+void logErrorToSd(const String &msg) {
+    if (!sdCardFound) return;
+    File f = SD.open("/error.log", FILE_APPEND);
+    if (!f) {
+        Serial.println("Error opening error.log for append");
+        return;
+    }
+    // Include ISO timestamp if time available
+    extern String getIsoTimestamp();
+    String ts = getIsoTimestamp();
+    f.print(ts);
+    f.print(" ");
+    f.println(msg);
+    f.close();
+}
+
+// Read error log; return up to maxLines (if maxLines < 0, return whole file)
+String readErrorLog(int maxLines) {
+    if (!sdCardFound) return String();
+    File f = SD.open("/error.log", FILE_READ);
+    if (!f) return String();
+
+    String out;
+    int lines = 0;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        out += line + "\n";
+        lines++;
+        if (maxLines >= 0 && lines >= maxLines) break;
+    }
+    f.close();
+    return out;
+}
+
+// Clear the error log
+void clearErrorLog() {
+    if (!sdCardFound) return;
+    // Overwrite file by opening in write mode
+    File f = SD.open("/error.log", FILE_WRITE);
+    if (!f) return;
+    f.close();
+}
+
 void setSdEnabled(bool enabled) {
     sdPreferences.begin("sd", false);
     sdPreferences.putInt(PREF_SD_ENABLED, enabled ? 1 : 0);

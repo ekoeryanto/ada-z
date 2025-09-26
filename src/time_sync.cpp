@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <Preferences.h>
+#include "sd_logger.h"
 
 // Global variables defined here
 RTC_DS3231 rtc;
@@ -52,17 +53,15 @@ String getLastNtpSuccessIso() {
 
 String getIsoTimestamp() {
     time_t sys = time(nullptr);
-    struct tm *tm_sys = localtime(&sys);
+    // Use UTC/gmtime for ISO timestamps so we always publish Z-terminated UTC time
+    struct tm *tm_sys = gmtime(&sys);
     bool sys_valid = (tm_sys && (tm_sys->tm_year + 1900) > 2016);
 
-    // If we have a stored NTP epoch, prefer it when system/RTC drift significantly
-    time_t lastNtp = getLastNtpSuccessEpoch();
-    if (lastNtp > 0) {
-        // If system time differs from last NTP by more than 2 hours, use stored NTP ISO
-        if (!sys_valid || (labs((long)(sys - lastNtp)) > (2L * 3600))) {
-            String s = getLastNtpSuccessIso();
-            if (s.length() > 0) return s;
-        }
+    // If system time is valid, prefer it (UTC)
+    if (sys_valid) {
+        char isoBuf[32];
+        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
+        return String(isoBuf);
     }
 
     // If RTC present, validate its time before using it
@@ -82,13 +81,6 @@ String getIsoTimestamp() {
                 return String(buf);
             }
         }
-    }
-
-    // Prefer system time if valid
-    if (sys_valid) {
-        char isoBuf[32];
-        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
-        return String(isoBuf);
     }
 
     // Fallback: return last successful NTP ISO stored in preferences (could be empty)
@@ -150,7 +142,7 @@ void checkNtpAndUpdateRtc() {
                 time_t nowEpoch = time(nullptr);
                 // Persist epoch and ISO string of last successful NTP sync
                 char isoBuf[32];
-                struct tm *tm_now = localtime(&nowEpoch);
+                struct tm *tm_now = gmtime(&nowEpoch);
                 if (tm_now) {
                     strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_now);
                 } else {
@@ -164,8 +156,18 @@ void checkNtpAndUpdateRtc() {
 
                 if (rtcFound && pendingRtcSync) {
                     Serial.println("Updating RTC from NTP time.");
-                    rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+                    DateTime newDt(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+                    rtc.adjust(newDt);
+                    // Also set system time explicitly from NTP-corrected time
+                    time_t tnew = mktime(&timeinfo);
+                    struct timeval tv = { .tv_sec = tnew, .tv_usec = 0 };
+                    settimeofday(&tv, NULL);
                     pendingRtcSync = false;
+                    // Log RTC update to SD for audit
+                    char isoBuf2[32];
+                    strftime(isoBuf2, sizeof(isoBuf2), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+                    String msg = String("RTC updated from NTP: ") + String(isoBuf2);
+                    logErrorToSd(msg);
                 }
             } else {
                 Serial.println("NTP sync fetched invalid time, will retry.");
@@ -212,7 +214,7 @@ void setupTimeSync() {
             pendingRtcSync = true;
             rtcLostPowerFlag = true;
         } else {
-            // If RTC has valid time, seed system time from RTC now so logs and tasks have correct time before NTP
+            // If RTC has valid time, seed system time from RTC only if plausible
             DateTime now = rtc.now();
             struct tm tm_rtc;
             tm_rtc.tm_year = now.year() - 1900;
@@ -221,11 +223,20 @@ void setupTimeSync() {
             tm_rtc.tm_hour = now.hour();
             tm_rtc.tm_min = now.minute();
             tm_rtc.tm_sec = now.second();
-            time_t t = mktime(&tm_rtc);
-            struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
-            settimeofday(&tv, NULL);
-            Serial.println("System time seeded from RTC.");
-            lastNtpSuccess = millis(); // consider RTC time as last known good time
+            int rtc_year = now.year();
+            if (rtc_year >= 2020 && rtc_year <= 2035) {
+                time_t t = mktime(&tm_rtc);
+                struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+                settimeofday(&tv, NULL);
+                Serial.println("System time seeded from RTC.");
+                lastNtpSuccess = millis(); // consider RTC time as last known good time
+            } else {
+                // RTC time implausible; request NTP sync to set RTC
+                Serial.println("RTC time implausible; scheduling NTP sync to set RTC.");
+                pendingRtcSync = true;
+                rtcLostPowerFlag = true;
+                logErrorToSd(String("RTC time implausible on boot: year=") + String(rtc_year));
+            }
         }
     } else {
         if (rtcEnabled) {

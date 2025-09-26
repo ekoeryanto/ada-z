@@ -5,6 +5,7 @@
 #include "sensor_calibration_types.h" // For SensorCalibration struct
 
 #include "esp_adc_cal.h"
+#include "sd_logger.h"
 
 // ADC calibration handle and characteristics (declared early so conversion helpers can use it)
 static esp_adc_cal_characteristics_t adc_chars;
@@ -195,6 +196,18 @@ void saveCalibrationForPin(int pinIndex, float zeroRawAdc, float spanRawAdc, flo
     preferences.putFloat((pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), zeroPressureValue);
     preferences.putFloat((pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), spanPressureValue);
     preferences.end();
+
+    // Verify write by reading back one of the values; if mismatch, log to SD
+    Preferences pcheck;
+    pcheck.begin(CAL_NAMESPACE, true);
+    float check = pcheck.getFloat((pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), -9999.0);
+    pcheck.end();
+    if (fabs(check - spanPressureValue) > 0.001f) {
+        // Defer to SD logger if available
+        String msg = String("Calibration write mismatch for pin ") + String(VOLTAGE_SENSOR_PINS[pinIndex]) + String(" wrote=") + String(spanPressureValue) + String(" read=") + String(check);
+        logErrorToSd(msg);
+        Serial.println(msg);
+    }
 
     // Update in-memory calibration and recompute offset/scale
     voltageSensorCalibrations[pinIndex].zeroRawAdc = zeroRawAdc;

@@ -83,24 +83,24 @@ void sendAdsNotification(int adsChannel, int16_t rawAds, float mv, float ma) {
     JsonObject conv = val["converted"].to<JsonObject>();
     float voltage_v = mv / 1000.0f;
     float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
-    conv["value"] = pressure_bar;
+    conv["value"] = roundToDecimals(pressure_bar, 2);
     conv["unit"] = "bar";
     conv["semantic"] = "pressure";
     conv["note"] = "TP5551 derived";
-    conv["from_raw"] = pressure_bar;
+    conv["from_raw"] = roundToDecimals(pressure_bar, 2);
     float tp_scale = getAdsTpScale(adsChannel);
     float ma_smoothed = getAdsSmoothedMa(adsChannel);
     float mv_from_smoothed = ma_smoothed * tp_scale;
     float pressure_from_smoothed = (mv_from_smoothed / 1000.0f / 10.0f) * DEFAULT_RANGE_BAR;
-    conv["from_filtered"] = pressure_from_smoothed;
+    conv["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
 
     JsonObject meta = a["meta"].to<JsonObject>();
     JsonObject meta_meas = meta["measurement"].to<JsonObject>();
-    meta_meas["mv"] = mv;
-    meta_meas["ma"] = ma;
+    meta_meas["mv"] = roundToDecimals(mv, 2);
+    meta_meas["ma"] = roundToDecimals(ma, 4);
     meta["tp_model"] = "TP5551";
-    meta["tp_scale_mv_per_ma"] = tp_scale;
-    meta["cal_tp_scale_mv_per_ma"] = tp_scale;
+    meta["tp_scale_mv_per_ma"] = roundToDecimals(tp_scale, 2);
+    meta["cal_tp_scale_mv_per_ma"] = roundToDecimals(tp_scale, 2);
 
     String payload;
     serializeJson(doc, payload);
@@ -155,28 +155,35 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
         float smoothed = smoothedADC[i];
         float voltage_smoothed_v = convert010V(round(smoothed));
         struct SensorCalibration cal = getCalibrationForPin(sensorIndex);
-        float pressure_from_raw = (raw * cal.scale) + cal.offset;
-        float pressure_from_filtered = (round(smoothed) * cal.scale) + cal.offset;
-        float converted = getSmoothedVoltagePressure(sensorIndex);
+    float pressure_from_raw = (raw * cal.scale) + cal.offset;
+    float pressure_from_filtered = (round(smoothed) * cal.scale) + cal.offset;
+    // Use the locally computed filtered->pressure value here to ensure the
+    // "value" field in the notification is consistent with the
+    // "from_filtered"/"from_raw" fields. Previously this called
+    // getSmoothedVoltagePressure() which reads the module-global
+    // smoothedADC[] and could be out-of-sync with the smoothed value
+    // passed into this function, producing inconsistent output.
+    float converted = pressure_from_filtered;
 
         JsonObject val = obj["value"].to<JsonObject>();
         JsonObject rawObj = val["raw"].to<JsonObject>();
         rawObj["value"] = raw;
         rawObj["original"] = raw;
         rawObj["effective"] = raw;
-        val["filtered"] = smoothed;
+        // Round filtered value to 2 decimals
+        val["filtered"] = roundToDecimals(smoothed, 2);
     // ADC: omit measurement object; keep scaled/converted only
             JsonObject scaled = val["scaled"].to<JsonObject>();
-            scaled["value"] = voltage_smoothed_v;
+            scaled["value"] = roundToDecimals(voltage_smoothed_v, 2);
             scaled["unit"] = "volt";
     JsonObject conv = val["converted"].to<JsonObject>();
-    conv["value"] = converted;
+    conv["value"] = roundToDecimals(converted, 2);
     conv["unit"] = "bar";
     conv["semantic"] = "pressure";
-    conv["from_raw"] = pressure_from_raw;
-    conv["from_filtered"] = pressure_from_filtered;
-    // Explicitly include smoothed/filtered converted value
-    conv["from_filtered_value"] = pressure_from_filtered;
+    conv["from_raw"] = roundToDecimals(pressure_from_raw, 2);
+    conv["from_filtered"] = roundToDecimals(pressure_from_filtered, 2);
+    // Explicitly include smoothed/filtered converted value with fixed decimals
+    conv["from_filtered_value"] = roundToDecimals(pressure_from_filtered, 2);
     conv["from_filtered_unit"] = String("bar");
     }
 
@@ -200,29 +207,29 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
     float voltage_v = mv / 1000.0f;
     float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
 
-        JsonObject val = a["value"].to<JsonObject>();
-        JsonObject rawA = val["raw"].to<JsonObject>();
-        rawA["value"] = raw;
+    JsonObject val = a["value"].to<JsonObject>();
+    JsonObject rawA = val["raw"].to<JsonObject>();
+    rawA["value"] = raw;
     JsonObject conv = val["converted"].to<JsonObject>();
-    conv["value"] = pressure_bar;
+    conv["value"] = roundToDecimals(pressure_bar, 2);
     conv["unit"] = "bar";
     conv["semantic"] = "pressure";
     conv["note"] = "derived from TP5551 using tp_scale_mv_per_ma";
     // Provide from_raw and from_filtered (smoothed) converted pressure for ADS
-    conv["from_raw"] = pressure_bar;
+    conv["from_raw"] = roundToDecimals(pressure_bar, 2);
     float ma_smoothed = getAdsSmoothedMa(ch);
     float mv_from_smoothed = ma_smoothed * tp_scale;
     float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
     float pressure_from_smoothed = (voltage_from_smoothed / 10.0f) * DEFAULT_RANGE_BAR;
-    conv["from_filtered"] = pressure_from_smoothed;
+    conv["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
     JsonObject meta = a["meta"].to<JsonObject>();
     JsonObject meta_meas = meta["measurement"].to<JsonObject>();
-        meta_meas["mv"] = mv;
-        meta_meas["ma"] = ma;
+        meta_meas["mv"] = roundToDecimals(mv, 2);
+        meta_meas["ma"] = roundToDecimals(ma, 2);
         meta["tp_model"] = "TP5551";
-    meta["tp_scale_mv_per_ma"] = tp_scale;
+    meta["tp_scale_mv_per_ma"] = roundToDecimals(tp_scale, 2);
     // Expose calibration key for tp_scale under cal_ prefix for consistency
-    meta["cal_tp_scale_mv_per_ma"] = tp_scale;
+    meta["cal_tp_scale_mv_per_ma"] = roundToDecimals(tp_scale, 2);
         meta["ma_smoothed"] = getAdsSmoothedMa(ch);
     }
 #
@@ -315,31 +322,31 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
     rawObj["value"] = rawToUse;
     rawObj["original"] = rawADC;
     rawObj["effective"] = rawToUse;
-    val["filtered"] = smoothedToUse;
+    val["filtered"] = roundToDecimals(smoothedToUse, 2);
     // ADC: omit measurement object; keep scaled/converted only
     JsonObject scaled = val["scaled"].to<JsonObject>();
-    scaled["value"] = convert010V((int)round(smoothedADC));
+    scaled["value"] = roundToDecimals(convert010V((int)round(smoothedADC)), 2);
     scaled["unit"] = "volt";
     JsonObject conv = val["converted"].to<JsonObject>();
-    conv["value"] = voltage; // interpreted as pressure (bar)
+    conv["value"] = roundToDecimals(voltage, 2); // interpreted as pressure (bar)
     conv["unit"] = "bar";
     struct SensorCalibration cal = getCalibrationForPin(sensorIndex);
     float pressure_from_raw = (rawADC * cal.scale) + cal.offset;
     float pressure_from_filtered = (round(smoothedADC) * cal.scale) + cal.offset;
     conv["semantic"] = "pressure";
-    conv["from_raw"] = pressure_from_raw;
-    conv["from_filtered"] = pressure_from_filtered;
+    conv["from_raw"] = roundToDecimals(pressure_from_raw, 2);
+    conv["from_filtered"] = roundToDecimals(pressure_from_filtered, 2);
     // Also expose the smoothed converted value for consumers
-    conv["from_filtered_value"] = pressure_from_filtered;
+    conv["from_filtered_value"] = roundToDecimals(pressure_from_filtered, 2);
     conv["from_filtered_unit"] = String("bar");
 
     JsonObject meta = s["meta"].to<JsonObject>();
     meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
     meta["cal_span_raw_adc"] = cal.spanRawAdc;
-    meta["cal_zero_pressure_value"] = cal.zeroPressureValue;
-    meta["cal_span_pressure_value"] = cal.spanPressureValue;
-    meta["cal_scale"] = cal.scale;
-    meta["cal_offset"] = cal.offset;
+    meta["cal_zero_pressure_value"] = roundToDecimals(cal.zeroPressureValue, 2);
+    meta["cal_span_pressure_value"] = roundToDecimals(cal.spanPressureValue, 2);
+    meta["cal_scale"] = roundToDecimals(cal.scale, 4); // keep scale with more precision
+    meta["cal_offset"] = roundToDecimals(cal.offset, 4);
 
     String payload;
     serializeJson(doc, payload);

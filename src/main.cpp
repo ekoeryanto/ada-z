@@ -67,6 +67,9 @@ void setup() {
     }
     if (nvs_err != ESP_OK) {
         Serial.printf("[WARN] NVS init failed: 0x%08x\n", nvs_err);
+        // Log to SD if available
+        String msg = String("NVS init failed: 0x") + String((int)nvs_err, HEX);
+        logErrorToSd(msg);
     }
 
     // Initialize ADS1115 for water pressure current sensors on A0/A1 (raw readings, no smoothing)

@@ -8,6 +8,11 @@
 void setupSdLogger();
 void logSensorDataToSd(String data);
 
+// Error log helpers
+void logErrorToSd(const String &msg);
+String readErrorLog(int maxLines = -1); // maxLines=-1 => return whole file
+void clearErrorLog();
+
 // Enable/disable SD logging at runtime
 void setSdEnabled(bool enabled);
 bool getSdEnabled();

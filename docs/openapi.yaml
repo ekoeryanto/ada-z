@@ -158,7 +158,7 @@ paths:
           schema:
             type: integer
         - in: query
-          name: pin_number
+          name: pin
           schema:
             type: integer
       responses:
@@ -179,7 +179,7 @@ paths:
               properties:
                 pin_index:
                   type: integer
-                pin_number:
+                pin:
                   type: integer
                 zero_raw_adc:
                   type: number
@@ -207,7 +207,7 @@ paths:
             schema:
               type: object
               properties:
-                pin_number:
+                pin:
                   type: integer
                 zero_raw_adc:
                   type: number
@@ -310,7 +310,7 @@ paths:
   /notifications/trigger:
     post:
       summary: Trigger notification(s) immediately by reading sensors
-      description: "Trigger a notification for a single sensor or for all configured sensors. Provide either `sensor_index` or `pin_number` in the JSON body to target a single sensor. An empty JSON object triggers notifications for all sensors."
+  description: "Trigger a notification for a single sensor or for all configured sensors. Provide either `sensor_index` or `pin` in the JSON body to target a single sensor. An empty JSON object triggers notifications for all sensors."
       requestBody:
         required: true
         content:
@@ -320,7 +320,7 @@ paths:
               properties:
                 sensor_index:
                   type: integer
-                pin_number:
+                pin:
                   type: integer
       responses:
         '200':
@@ -381,9 +381,9 @@ components:
       properties:
         pin_index:
           type: integer
-        pin_number:
+        pin:
           type: integer
-        sensor_id:
+  tag:
           type: string
         zero_raw_adc:
           type: number
@@ -399,8 +399,8 @@ components:
           type: number
       example:
         pin_index: 0
-        pin_number: 34
-        sensor_id: "AI1"
+  pin: 34
+  tag: "AI1"
         zero_raw_adc: 0.0
         span_raw_adc: 4095.0
         zero_pressure_value: 0.0
@@ -413,7 +413,7 @@ components:
       properties:
         sensor_index:
           type: integer
-        sensor_id:
+  tag:
           type: string
         sensor_pin:
           type: integer
@@ -526,7 +526,7 @@ components:
       properties:
         sensor_index:
           type: integer
-        sensor_id:
+  tag:
           type: string
         sensor_pin:
           type: integer
@@ -553,7 +553,7 @@ components:
           description: Always 'bar'
       example:
         sensor_index: 0
-        sensor_id: "AI1"
+  tag: "AI1"
         sensor_pin: 34
         enabled: 1
         raw_adc: 2048

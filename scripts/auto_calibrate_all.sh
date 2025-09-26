@@ -80,7 +80,7 @@ echo "$SENSORS_JSON" | jq -c '.tags[] | select(.source=="adc")' | while read -r 
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY RUN: would POST span calibration for $id -> $target"
   else
-    PAYLOAD=$(jq -n --argjson bn "{\"pin_number\": $pin, \"trigger_span_calibration\": true, \"span_pressure_value\": ($target|0+0)}" '$bn')
+  PAYLOAD=$(jq -n --argjson bn "{\"pin\": $pin, \"trigger_span_calibration\": true, \"span_pressure_value\": ($target|0+0)}" '$bn')
     # Using HTTP POST /calibrate/pin
     resp=$(curl -s -X POST "http://${DEVICE_IP}/calibrate/pin" -H 'Content-Type: application/json' -d "$PAYLOAD") || true
     echo "Response: $resp"

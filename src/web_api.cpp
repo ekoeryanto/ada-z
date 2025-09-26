@@ -134,6 +134,21 @@ void loadCalibration() {
     // For now, we'll just print it.
 }
 
+// Helper: resolve a tag like "AI1" (case-insensitive) to a voltage sensor index (0-based).
+// Returns -1 if not recognized. This lets API clients provide tags instead of pin numbers.
+static int tagToIndex(const String &tag) {
+    if (tag.length() < 3) return -1;
+    String s = tag;
+    s.toUpperCase();
+    if (!s.startsWith("AI")) return -1;
+    String num = s.substring(2);
+    int n = num.toInt();
+    if (n <= 0) return -1;
+    int idx = n - 1;
+    if (idx >= 0 && idx < getNumVoltageSensors()) return idx;
+    return -1;
+}
+
 void handleCalibrate() {
     if (server->method() == HTTP_POST) {
         if (!server->hasArg("plain")) {
@@ -155,17 +170,20 @@ void handleCalibrate() {
             return;
         }
 
-        // Determine which sensor pin/index this calibration applies to
+        // Determine which sensor pin/index this calibration applies to. Accept pin_index, pin or sensor_id (AI1)
         int pinIndex = -1;
         if (doc["pin_index"].is<int>()) {
             pinIndex = doc["pin_index"].as<int>();
-        } else if (doc["pin_number"].is<int>()) {
-            int pinNumber = doc["pin_number"].as<int>();
+        } else if (doc["pin"].is<int>()) {
+            int pinNumber = doc["pin"].as<int>();
             pinIndex = findVoltageSensorIndexByPin(pinNumber);
+        } else if (doc["tag"].is<String>()) {
+            String sid = doc["tag"].as<String>();
+            pinIndex = tagToIndex(sid);
         }
 
         if (pinIndex < 0) {
-            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid or missing pin_index/pin_number\"}");
+            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid or missing pin_index/pin\"}");
             return;
         }
 
@@ -211,9 +229,11 @@ void handleCalibrate() {
         int pinIndex = -1;
         if (server->hasArg("pin_index")) {
             pinIndex = server->arg("pin_index").toInt();
-        } else if (server->hasArg("pin_number")) {
-            int pinNumber = server->arg("pin_number").toInt();
+        } else if (server->hasArg("pin")) {
+            int pinNumber = server->arg("pin").toInt();
             pinIndex = findVoltageSensorIndexByPin(pinNumber);
+        } else if (server->hasArg("tag")) {
+            pinIndex = tagToIndex(server->arg("tag"));
         } else {
             // Default to first sensor if none provided
             pinIndex = 0;
@@ -227,8 +247,8 @@ void handleCalibrate() {
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             JsonDocDyn doc(1024);
         doc["pin_index"] = pinIndex;
-        doc["pin_number"] = getVoltageSensorPin(pinIndex);
-        doc["sensor_id"] = String("AI") + String(pinIndex + 1);
+        doc["pin"] = getVoltageSensorPin(pinIndex);
+    doc["tag"] = String("AI") + String(pinIndex + 1);
         doc["zero_raw_adc"] = cal.zeroRawAdc;
         doc["span_raw_adc"] = cal.spanRawAdc;
         doc["zero_pressure_value"] = cal.zeroPressureValue;
@@ -277,6 +297,157 @@ void setupWebServer(int port /*= 80*/) {
         serializeJson(doc, resp);
         sendCorsJson(200, "application/json", resp);
     });
+
+    // Read a single sensor by tag (supports query ?tag=AI1 or path /tag/AI1)
+    // Default sampling is 100; can be overridden with ?sampling=N
+    server->on("/tag", HTTP_GET, []() {
+        String tag;
+        if (server->hasArg("tag")) {
+            tag = server->arg("tag");
+        } else {
+            // no tag query; require path style /tag/<TAG>
+            String uri = server->uri();
+            if (uri.startsWith("/tag/")) tag = uri.substring(5);
+        }
+
+        int sampling = 100;
+        if (server->hasArg("sampling")) sampling = server->arg("sampling").toInt();
+        if (sampling <= 0) sampling = 100;
+
+        if (tag.length() == 0) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing tag\"}");
+            return;
+        }
+
+        int pinIndex = tagToIndex(tag);
+        if (pinIndex < 0) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown tag\"}");
+            return;
+        }
+
+        int pin = getVoltageSensorPin(pinIndex);
+        unsigned long sum = 0;
+        for (int i = 0; i < sampling; ++i) {
+            int raw = analogRead(pin);
+            sum += (unsigned long)raw;
+            delay(1);
+        }
+    float avgRaw = ((float)sum) / ((float)sampling);
+        struct SensorCalibration cal = getCalibrationForPin(pinIndex);
+        float converted = (avgRaw * cal.scale) + cal.offset;
+
+        JsonDocDyn outDoc(256);
+        outDoc["tag"] = tag;
+        outDoc["pin_index"] = pinIndex;
+        outDoc["pin"] = pin;
+        outDoc["samples"] = sampling;
+        outDoc["measured_raw_avg"] = avgRaw;
+        JsonObject conv = outDoc["converted"].to<JsonObject>();
+        conv["value"] = roundToDecimals(converted, 2);
+        conv["unit"] = "bar";
+
+        String out;
+        serializeJson(outDoc, out);
+        sendCorsJson(200, "application/json", out);
+    });
+
+    // Provide support for path-style /tag/AI1 by routing through notFound handler
+    server->onNotFound([]() {
+        String uri = server->uri();
+        if (!uri.startsWith("/tag/")) {
+            // default 404
+            sendCorsJson(404, "application/json", "{\"status\":\"error\",\"message\":\"Not found\"}");
+            return;
+        }
+
+        String tag = uri.substring(5);
+        int sampling = 100;
+        if (server->hasArg("sampling")) sampling = server->arg("sampling").toInt();
+        if (sampling <= 0) sampling = 100;
+
+        int pinIndex = tagToIndex(tag);
+        if (pinIndex < 0) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown tag\"}");
+            return;
+        }
+
+        int pin = getVoltageSensorPin(pinIndex);
+        unsigned long sum = 0;
+        for (int i = 0; i < sampling; ++i) {
+            int raw = analogRead(pin);
+            sum += (unsigned long)raw;
+            delay(1);
+        }
+    float avgRaw = ((float)sum) / ((float)sampling);
+        struct SensorCalibration cal = getCalibrationForPin(pinIndex);
+        float converted = (avgRaw * cal.scale) + cal.offset;
+
+        JsonDocDyn outDoc(256);
+        outDoc["tag"] = tag;
+        outDoc["pin_index"] = pinIndex;
+        outDoc["pin"] = pin;
+        outDoc["samples"] = sampling;
+        outDoc["measured_raw_avg"] = avgRaw;
+        JsonObject conv = outDoc["converted"].to<JsonObject>();
+        conv["value"] = roundToDecimals(converted, 2);
+        conv["unit"] = "bar";
+
+        String out;
+        serializeJson(outDoc, out);
+        sendCorsJson(200, "application/json", out);
+    });
+    // RTC read/set endpoints
+    server->on("/time/rtc", HTTP_GET, []() {
+        JsonDocDyn doc(256);
+        doc["rtc_found"] = isRtcPresent() ? 1 : 0;
+        doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
+        time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
+        doc["rtc_epoch"] = (unsigned long)rtcEpoch;
+        doc["rtc_iso"] = isRtcPresent() ? String(ctime(&rtcEpoch)) : String("");
+        String resp;
+        serializeJson(doc, resp);
+        sendCorsJson(200, "application/json", resp);
+    });
+
+    server->on("/time/rtc", HTTP_POST, []() {
+        if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
+        String body = server->arg("plain");
+        JsonDocDyn doc(256);
+        DeserializationError err = deserializeJson(doc, body);
+        if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+
+        if (doc["from_system"].is<bool>() && doc["from_system"].as<bool>()) {
+            // Seed RTC from system time
+            if (!isRtcPresent()) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"RTC not present\"}"); return; }
+            time_t sys = time(nullptr);
+            struct tm *tm_sys = localtime(&sys);
+            if (!tm_sys) { sendCorsJson(500, "application/json", "{\"status\":\"error\",\"message\":\"System time invalid\"}"); return; }
+            DateTime dt(tm_sys->tm_year + 1900, tm_sys->tm_mon + 1, tm_sys->tm_mday, tm_sys->tm_hour, tm_sys->tm_min, tm_sys->tm_sec);
+            rtc.adjust(dt);
+            String resp = String("{\"status\":\"success\",\"message\":\"RTC set from system time\"}");
+            sendCorsJson(200, "application/json", resp);
+            return;
+        }
+
+        if (doc["iso"].is<String>()) {
+            String iso = doc["iso"].as<String>();
+            // Expect format YYYY-MM-DDTHH:MM:SSZ or similar
+            int Y,M,D,h,m,s;
+            if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%dZ", &Y,&M,&D,&h,&m,&s) == 6) {
+                if (!isRtcPresent()) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"RTC not present\"}"); return; }
+                DateTime dt(Y,M,D,h,m,s);
+                rtc.adjust(dt);
+                String resp = String("{\"status\":\"success\",\"message\":\"RTC set from ISO\"}");
+                sendCorsJson(200, "application/json", resp);
+                return;
+            } else {
+                sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid ISO format\"}");
+                return;
+            }
+        }
+
+        sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"No valid action provided\"}");
+    });
     server->on("/calibrate/pin", HTTP_POST, []() {
         if (!server->hasArg("plain")) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing JSON body\"}");
@@ -290,14 +461,14 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-        if (!doc["pin_number"].is<int>()) {
-            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing pin_number\"}");
+        if (!doc["pin"].is<int>()) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing pin\"}");
             return;
         }
-        int pinNumber = doc["pin_number"].as<int>();
+        int pinNumber = doc["pin"].as<int>();
         int pinIndex = findVoltageSensorIndexByPin(pinNumber);
         if (pinIndex < 0) {
-            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Unknown pin_number\"}");
+            sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Unknown pin\"}");
             return;
         }
 
@@ -326,7 +497,7 @@ void setupWebServer(int port /*= 80*/) {
             respDoc["status"] = "success";
             respDoc["message"] = "Blocking span calibration applied";
             respDoc["pin_index"] = pinIndex;
-            respDoc["pin_number"] = getVoltageSensorPin(pinIndex);
+            respDoc["pin"] = getVoltageSensorPin(pinIndex);
             respDoc["measured_raw_avg"] = avgRaw;
             respDoc["span_pressure_value"] = targetPressure;
             String resp;
@@ -371,17 +542,24 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Default calibration applied to all sensors\"}");
     });
 
-    // Convenience: apply default calibration for a single pin by pin_number
+    // Convenience: apply default calibration for a single pin by pin
     server->on("/calibrate/default/pin", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing JSON body\"}"); return; }
     String body = server->arg("plain");
             JsonDocDyn doc(256);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
-        if (!doc["pin_number"].is<int>()) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing pin_number\"}"); return; }
-        int pinNumber = doc["pin_number"].as<int>();
-        int pinIndex = findVoltageSensorIndexByPin(pinNumber);
-        if (pinIndex < 0) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown pin_number\"}"); return; }
+        int pinIndex = -1;
+        if (!doc["pin"].isNull()) {
+            int pinNumber = doc["pin"].as<int>();
+            pinIndex = findVoltageSensorIndexByPin(pinNumber);
+        } else if (!doc["tag"].isNull()) {
+            pinIndex = tagToIndex(doc["tag"].as<String>());
+        } else {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing pin or tag\"}");
+            return;
+        }
+        if (pinIndex < 0) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown sensor/pin\"}"); return; }
         saveCalibrationForPin(pinIndex, 0.0f, 4095.0f, 0.0f, 10.0f);
         // Reseed smoothed ADC for immediate effect
         setupVoltagePressureSensor();
@@ -406,8 +584,10 @@ void setupWebServer(int port /*= 80*/) {
         std::map<int, float> targets;
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
-                if (!so["pin_number"].isNull() && !so["target"].isNull()) {
-                    int pin = so["pin_number"].as<int>();
+                int pin = -1;
+                if (!so["pin"].isNull()) pin = so["pin"].as<int>();
+                else if (!so["tag"].isNull()) pin = tagToIndex(so["tag"].as<String>());
+                if (pin >= 0 && !so["target"].isNull()) {
                     float t = (float)so["target"].as<float>();
                     targets[pin] = t;
                 }
@@ -432,7 +612,7 @@ void setupWebServer(int port /*= 80*/) {
             int pinIndex = findVoltageSensorIndexByPin(pin);
             if (pinIndex < 0) {
                 JsonObject r = results.add<JsonObject>();
-                r["pin_number"] = pin;
+                r["pin"] = pin;
                 r["status"] = "error";
                 r["message"] = "unknown pin";
                 continue;
@@ -444,7 +624,7 @@ void setupWebServer(int port /*= 80*/) {
             setupVoltagePressureSensor();
 
             JsonObject r = results.add<JsonObject>();
-            r["pin_number"] = pin;
+            r["pin"] = pin;
             r["pin_index"] = pinIndex;
             r["measured_smoothed"] = smoothed;
             r["applied_span_raw"] = spanRaw;
@@ -455,6 +635,23 @@ void setupWebServer(int port /*= 80*/) {
         String out;
         serializeJson(resp, out);
         sendCorsJson(200, "application/json", out);
+    });
+
+    // SD error log endpoints
+    server->on("/sd/error_log", HTTP_GET, []() {
+        int lines = -1;
+        if (server->hasArg("lines")) lines = server->arg("lines").toInt();
+        String content = readErrorLog(lines);
+        if (content.length() == 0) {
+            sendCorsJson(200, "text/plain", "");
+            return;
+        }
+        sendCorsJson(200, "text/plain", content);
+    });
+
+    server->on("/sd/error_log/clear", HTTP_POST, []() {
+        clearErrorLog();
+        sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"error log cleared\"}");
     });
     // ADS auto-calibration: compute and persist tp_scale (mV per mA) so TP5551-derived voltage maps to target pressure
     server->on("/ads/calibrate/auto", HTTP_POST, []() {
@@ -538,7 +735,7 @@ void setupWebServer(int port /*= 80*/) {
     // Auto-calibration endpoint: apply span calibration using current smoothed readings
     // POST body options:
     //  { "target": 4.8 }                -> apply target to all ADC sensors
-    //  { "sensors": [ {"pin_number":35, "target":4.8}, ... ] } -> per-pin targets
+    //  { "sensors": [ {"pin":35, "target":4.8}, ... ] } -> per-pin targets
     server->on("/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
@@ -551,8 +748,10 @@ void setupWebServer(int port /*= 80*/) {
 
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
-                if (!so["pin_number"].isNull() && !so["target"].isNull()) {
-                    int pin = so["pin_number"].as<int>();
+                int pin = -1;
+                if (!so["pin"].isNull()) pin = so["pin"].as<int>();
+                else if (!so["tag"].isNull()) pin = tagToIndex(so["tag"].as<String>());
+                if (pin >= 0 && !so["target"].isNull()) {
                     float t = (float)so["target"].as<float>();
                     targets[pin] = t;
                 }
@@ -579,7 +778,7 @@ void setupWebServer(int port /*= 80*/) {
             int pinIndex = findVoltageSensorIndexByPin(pin);
             if (pinIndex < 0) {
                 JsonObject r = results.add<JsonObject>();
-                r["pin_number"] = pin;
+                r["pin"] = pin;
                 r["status"] = "error";
                 r["message"] = "unknown pin";
                 continue;
@@ -596,7 +795,7 @@ void setupWebServer(int port /*= 80*/) {
             setupVoltagePressureSensor();
 
             JsonObject r = results.add<JsonObject>();
-            r["pin_number"] = pin;
+            r["pin"] = pin;
             r["pin_index"] = pinIndex;
             r["measured_smoothed"] = smoothed;
             r["applied_span_raw"] = spanRaw;
@@ -611,12 +810,12 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/calibrate", handleCalibrate);
     server->on("/calibrate/all", HTTP_GET, []() {
     JsonDocDyn doc(1024);
-        for (int i = 0; i < getNumVoltageSensors(); ++i) {
-            struct SensorCalibration cal = getCalibrationForPin(i);
+            for (int i = 0; i < getNumVoltageSensors(); ++i) {
+                struct SensorCalibration cal = getCalibrationForPin(i);
             JsonObject obj = doc[String(i)].to<JsonObject>();
             obj["pin_index"] = i;
-                obj["pin_number"] = getVoltageSensorPin(i);
-                obj["sensor_id"] = String("AI") + String(i + 1);
+                obj["pin"] = getVoltageSensorPin(i);
+                obj["tag"] = String("AI") + String(i + 1);
             obj["zero_raw_adc"] = cal.zeroRawAdc;
             obj["span_raw_adc"] = cal.spanRawAdc;
             obj["zero_pressure_value"] = cal.zeroPressureValue;
@@ -734,14 +933,14 @@ void setupWebServer(int port /*= 80*/) {
             val["filtered"] = smoothed;
             // ADC: measurement not included; keep scaled/converted only
             JsonObject scaled = val["scaled"].to<JsonObject>();
-            scaled["value"] = voltage_smoothed_v;
+            scaled["value"] = roundToDecimals(voltage_smoothed_v, 2);
             scaled["unit"] = "volt";
             JsonObject conv = val["converted"].to<JsonObject>();
-            conv["value"] = calibrated;
+            conv["value"] = roundToDecimals(calibrated, 2);
             conv["unit"] = "bar";
             conv["semantic"] = "pressure";
-            conv["from_raw"] = pressure_from_raw;
-            conv["from_filtered"] = pressure_from_smoothed;
+            conv["from_raw"] = roundToDecimals(pressure_from_raw, 2);
+            conv["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
 
             JsonObject meta = s["meta"].to<JsonObject>();
             meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
@@ -775,20 +974,20 @@ void setupWebServer(int port /*= 80*/) {
             val["raw"] = raw;
             // ADS: move measurement into meta for ADS channels
             JsonObject scaled = val["scaled"].to<JsonObject>();
-            scaled["value"] = mv / 1000.0f;
+            scaled["value"] = roundToDecimals(mv / 1000.0f, 2);
             scaled["unit"] = "volt";
             JsonObject convA = val["converted"].to<JsonObject>();
-            convA["value"] = pressure_bar;
+            convA["value"] = roundToDecimals(pressure_bar, 2);
             convA["unit"] = "bar";
             convA["semantic"] = "pressure";
             convA["note"] = "TP5551 derived";
             // Provide from_raw and from_filtered (smoothed) converted pressure for ADS
-            convA["from_raw"] = pressure_bar;
+            convA["from_raw"] = roundToDecimals(pressure_bar, 2);
             float ma_smoothed = getAdsSmoothedMa(ch);
             float mv_from_smoothed = ma_smoothed * tp_scale;
             float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
             float pressure_from_smoothed = (voltage_from_smoothed / 10.0f) * DEFAULT_RANGE_BAR;
-            convA["from_filtered"] = pressure_from_smoothed;
+            convA["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
 
             JsonObject meta = s["meta"].to<JsonObject>();
             JsonObject meta_meas = meta["measurement"].to<JsonObject>();
@@ -1016,7 +1215,7 @@ void setupWebServer(int port /*= 80*/) {
         p.end();
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"ADS config saved\"}");
     });
-    // Trigger notification(s) on demand: POST body may include { "sensor_index": int } or { "pin_number": int }
+    // Trigger notification(s) on demand: POST body may include { "sensor_index": int } or { "pin": int } (accepts legacy "pin_number" too)
     server->on("/notifications/trigger", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
@@ -1033,11 +1232,11 @@ void setupWebServer(int port /*= 80*/) {
                 sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid sensor_index\"}");
                 return;
             }
-        } else if (doc["pin_number"].is<int>()) {
-            int pin = doc["pin_number"].as<int>();
+        } else if (doc["pin"].is<int>() || doc["pin_number"].is<int>()) {
+            int pin = doc["pin"].is<int>() ? doc["pin"].as<int>() : doc["pin_number"].as<int>();
             targetIndex = findVoltageSensorIndexByPin(pin);
             if (targetIndex < 0) {
-                sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown pin_number\"}");
+                sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown pin\"}");
                 return;
             }
         } else if (doc["ads_channel"].is<int>()) {

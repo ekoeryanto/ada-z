@@ -377,8 +377,8 @@ export { };
       const item = allObj[k];
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td class="p-2 border-t">${item.sensor_id || ('AI' + (item.pin_index !== undefined ? (item.pin_index+1) : k))}</td>
-        <td class="p-2 border-t">${item.pin_number ?? '-'}</td>
+  <td class="p-2 border-t">${item.tag || ('AI' + (item.pin_index !== undefined ? (item.pin_index+1) : k))}</td>
+          <td class="p-2 border-t">${item.pin ?? '-'}</td>
         <td class="p-2 border-t">${item.zero_raw_adc ?? '-'}</td>
         <td class="p-2 border-t">${item.span_raw_adc ?? '-'}</td>
         <td class="p-2 border-t">${item.zero_pressure_value ?? '-'}</td>
@@ -387,12 +387,12 @@ export { };
       `;
       const btn = tr.querySelector('.editCalBtn');
       btn.addEventListener('click', async () => {
-        // Fetch fresh calibration for this pin (use /calibrate?pin_number=...)
+  // Fetch fresh calibration for this pin (use /calibrate?pin=...)
         const hostUrl = host.startsWith('http') ? host : ('http://' + host);
-        let pinNumber = item.pin_number;
+          let pinNumber = item.pin;
         if (!pinNumber && item.pin_index !== undefined) {
           // derive pin number by calling /sensors/readings or /sensors/config is another option, but prefer existing payload
-          pinNumber = item.pin_number || item.pin_number; // fallback (no-op)
+            pinNumber = item.pin || item.pin_number; // fallback (maintain backward compat with older server responses)
         }
         const calUrl = hostUrl + '/calibrate?pin_index=' + (item.pin_index ?? k);
         try {
@@ -402,7 +402,7 @@ export { };
           // Open an editor below the table
           const editor = document.createElement('div');
           editor.className = 'mt-4 p-2 border rounded bg-white';
-          editor.innerHTML = `<h4 class="font-medium mb-2">Edit ${j.sensor_id || ('Sensor ' + (j.pin_index+1))}</h4>`;
+          editor.innerHTML = `<h4 class="font-medium mb-2">Edit ${j.tag || ('Sensor ' + (j.pin_index+1))}</h4>`;
           renderCalibrationForm(editor, j, hostUrl + '/calibrate/pin');
           // Replace or append editor
           const existing = containerEl.querySelector('.calEditor');
@@ -456,8 +456,8 @@ export { };
     containerEl.appendChild(table);
   }
 
-  // When saving calibration via /calibrate/pin the server expects JSON body with pin_number or pin_index
-  // renderCalibrationForm will POST/PUT to the given endpoint; ensure payload contains pin_number or pin_index
+  // When saving calibration via /calibrate/pin the server expects JSON body with pin or pin_index
+  // renderCalibrationForm will POST/PUT to the given endpoint; ensure payload contains pin or pin_index
     btnRow.appendChild(saveBtn); btnRow.appendChild(status); form.appendChild(btnRow);
     containerEl.appendChild(form);
   }
