@@ -45,16 +45,16 @@ paths:
                     type: integer
                   tags_total:
                     type: integer
-                example:
-                  ip: "192.168.1.123"
-                  ap_ip: "192.168.4.1"
-                  mac: "DE:AD:BE:EF:00:01"
-                  ssid: "MyWiFi"
-                  rssi: -60
-                  hostname: "press-32"
-                  uptime_seconds: 3600
-                  num_sensors_configured: 3
-                  tags_total: 1
+              example:
+                ip: "192.168.1.123"
+                ap_ip: "192.168.4.1"
+                mac: "DE:AD:BE:EF:00:01"
+                ssid: "MyWiFi"
+                rssi: -60
+                hostname: "press-32"
+                uptime_seconds: 3600
+                num_sensors_configured: 3
+                tags_total: 1
 
   /config:
     get:
@@ -112,8 +112,9 @@ paths:
                 properties:
                   status:
                     type: string
-                example:
-                  status: "ok"
+              example:
+                status: "ok"
+
   /time/sync:
     post:
       summary: Trigger immediate NTP sync
@@ -310,7 +311,11 @@ paths:
   /notifications/trigger:
     post:
       summary: Trigger notification(s) immediately by reading sensors
-  description: "Trigger a notification for a single sensor or for all configured sensors. Provide either `sensor_index` or `pin` in the JSON body to target a single sensor. An empty JSON object triggers notifications for all sensors."
+      description: >-
+        Trigger a notification for a single sensor or for all configured
+        sensors. Provide either `sensor_index` or `pin` in the JSON body to
+        target a single sensor. An empty JSON object triggers notifications for
+        all sensors.
       requestBody:
         required: true
         content:
@@ -374,6 +379,388 @@ paths:
         '200':
           description: Updated
 
+  /time/status:
+    get:
+      summary: Get current time/RTC status
+      responses:
+        '200':
+          description: Time and RTC status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rtc_found:
+                    type: integer
+                  rtc_lost_power:
+                    type: integer
+                  rtc_epoch:
+                    type: integer
+                  rtc_iso:
+                    type: string
+                  system_epoch:
+                    type: integer
+                  system_iso:
+                    type: string
+                  last_ntp_epoch:
+                    type: integer
+                  last_ntp_iso:
+                    type: string
+                  pending_rtc_sync:
+                    type: integer
+
+  /tag:
+    get:
+      summary: Read a sensor by tag or query parameter
+      parameters:
+        - in: query
+          name: tag
+          schema:
+            type: string
+          description: Tag name (e.g. AI1)
+      responses:
+        '200':
+          description: Sensor reading for tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorReading'
+
+  /tag/{tag}:
+    get:
+      summary: Read a sensor by path tag
+      parameters:
+        - in: path
+          name: tag
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sensor reading for tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorReading'
+
+  /update:
+    post:
+      summary: OTA firmware update (multipart/form-data upload)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Update accepted
+        '401':
+          description: Unauthorized (API key missing or invalid)
+        '500':
+          description: Update failed
+
+  /time/rtc:
+    get:
+      summary: Get RTC info
+      responses:
+        '200':
+          description: RTC status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rtc_found:
+                    type: integer
+                  rtc_lost_power:
+                    type: integer
+                  rtc_epoch:
+                    type: integer
+                  rtc_iso:
+                    type: string
+    post:
+      summary: Set RTC (from_system or ISO string)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from_system:
+                  type: boolean
+                iso:
+                  type: string
+      responses:
+        '200':
+          description: RTC updated
+
+  /calibrate/default:
+    post:
+      summary: Apply default calibration to all sensors (0..4095 -> 0..10 bar)
+      responses:
+        '200':
+          description: Default calibration applied
+
+  /calibrate/default/pin:
+    post:
+      summary: Apply default calibration to a single pin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin:
+                  type: integer
+                tag:
+                  type: string
+      responses:
+        '200':
+          description: Default calibration applied to pin
+
+  /adc/calibrate/pin:
+    post:
+      summary: ADC-prefixed pin calibration (alias to /calibrate/pin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensorConfigUpdate'
+      responses:
+        '200':
+          description: Calibration saved
+
+  /adc/calibrate/auto:
+    post:
+      summary: Auto-calibrate ADC sensors using smoothed readings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                sensors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pin:
+                        type: integer
+                      target:
+                        type: number
+      responses:
+        '200':
+          description: Auto calibration applied
+
+  /calibrate/auto:
+    post:
+      summary: Auto-calibrate all ADC sensors using smoothed readings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                sensors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pin:
+                        type: integer
+                      target:
+                        type: number
+      responses:
+        '200':
+          description: Auto calibration applied
+
+  /ads/calibrate/auto:
+    post:
+      summary: Auto-calibrate ADS channels (TP5551 scaling)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                channels:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      channel:
+                        type: integer
+                      target:
+                        type: number
+      responses:
+        '200':
+          description: ADS calibration applied
+
+  /ads/config:
+    get:
+      summary: Get ADS channel configuration and smoothing params
+      responses:
+        '200':
+          description: ADS config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        channel:
+                          type: integer
+                        shunt_ohm:
+                          type: number
+                        amp_gain:
+                          type: number
+                        tp_scale_mv_per_ma:
+                          type: number
+                  ema_alpha:
+                    type: number
+                  num_avg:
+                    type: integer
+    put:
+      summary: Update ADS config (channels + smoothing)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channels:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      channel:
+                        type: integer
+                      shunt_ohm:
+                        type: number
+                      amp_gain:
+                        type: number
+                      tp_scale_mv_per_ma:
+                        type: number
+                ema_alpha:
+                  type: number
+                num_avg:
+                  type: integer
+      responses:
+        '200':
+          description: ADS config saved
+    post:
+      summary: Alias to save ADS config via POST
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channels:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      channel:
+                        type: integer
+                      shunt_ohm:
+                        type: number
+                      amp_gain:
+                        type: number
+                      tp_scale_mv_per_ma:
+                        type: number
+                ema_alpha:
+                  type: number
+                num_avg:
+                  type: integer
+      responses:
+        '200':
+          description: ADS config saved
+    options:
+      summary: CORS preflight for ADS config
+      responses:
+        '204':
+          description: No content
+
+  /adc/config:
+    get:
+      summary: Get ADC smoothing and sample-store configuration
+      responses:
+        '200':
+          description: ADC config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adc_num_samples:
+                    type: integer
+                  samples_per_sensor:
+                    type: integer
+    post:
+      summary: Update ADC smoothing/runtime sample-store configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                adc_num_samples:
+                  type: integer
+                samples_per_sensor:
+                  type: integer
+      responses:
+        '200':
+          description: ADC config updated
+
+  /sd/error_log:
+    get:
+      summary: Read SD error log (optional ?lines=N)
+      parameters:
+        - in: query
+          name: lines
+          schema:
+            type: integer
+          description: Number of tail lines to return (-1 for all)
+      responses:
+        '200':
+          description: Plain text error log
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /sd/error_log/clear:
+    post:
+      summary: Clear SD error log
+      responses:
+        '200':
+          description: Cleared
+
 components:
   schemas:
     Calibration:
@@ -383,7 +770,7 @@ components:
           type: integer
         pin:
           type: integer
-  tag:
+        tag:
           type: string
         zero_raw_adc:
           type: number
@@ -399,8 +786,8 @@ components:
           type: number
       example:
         pin_index: 0
-  pin: 34
-  tag: "AI1"
+        pin: 34
+        tag: "AI1"
         zero_raw_adc: 0.0
         span_raw_adc: 4095.0
         zero_pressure_value: 0.0
@@ -413,7 +800,7 @@ components:
       properties:
         sensor_index:
           type: integer
-  tag:
+        tag:
           type: string
         sensor_pin:
           type: integer
@@ -526,7 +913,7 @@ components:
       properties:
         sensor_index:
           type: integer
-  tag:
+        tag:
           type: string
         sensor_pin:
           type: integer
@@ -553,7 +940,7 @@ components:
           description: Always 'bar'
       example:
         sensor_index: 0
-  tag: "AI1"
+        tag: "AI1"
         sensor_pin: 34
         enabled: 1
         raw_adc: 2048
