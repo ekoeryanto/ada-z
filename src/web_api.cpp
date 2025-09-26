@@ -30,6 +30,9 @@ WebServer *server = nullptr;
 // Actual port WebServer is bound to (80 for STA, 8080 for AP/portal)
 int webServerPort = 0;
 
+// SD availability flag: initialize once at startup to avoid repeated SD.begin() calls
+static bool sdReady = false;
+
 // Track OTA upload outcome between the streaming handler and final HTTP_POST response
 static bool otaLastAuthRejected = false;
 static bool otaLastHadError = false;
@@ -273,6 +276,15 @@ void setupWebServer() {
 void setupWebServer(int port /*= 80*/) {
     if (server) { delete server; server = nullptr; }
     server = new WebServer(port);
+
+    // Initialize SD once for serving static docs (if present)
+    sdReady = false;
+    if (SD.begin()) {
+        sdReady = true;
+        Serial.println("SD initialized for static file serving.");
+    } else {
+        Serial.println("SD not available at startup; /swagger endpoints disabled");
+    }
 
     server->on("/time/sync", HTTP_POST, []() {
         // Trigger immediate NTP sync and request RTC update if RTC present
@@ -1420,14 +1432,8 @@ void setupWebServer(int port /*= 80*/) {
 
     server->on("/swagger/", HTTP_GET, []() {
         // Serve /docs/index.html from SD
-        if (!SD.begin()) {
-            sendCorsJson(404, "text/plain", "SD not available");
-            return;
-        }
-        if (!SD.exists("/docs/index.html")) {
-            sendCorsJson(404, "text/plain", "swagger index not found on SD");
-            return;
-        }
+        if (!sdReady) { sendCorsJson(404, "text/plain", "SD not available"); return; }
+        if (!SD.exists("/docs/index.html")) { sendCorsJson(404, "text/plain", "swagger index not found on SD"); return; }
         File f = SD.open("/docs/index.html", FILE_READ);
         if (!f) { sendCorsJson(500, "text/plain", "Failed to open file"); return; }
         setCorsHeaders();
@@ -1437,9 +1443,9 @@ void setupWebServer(int port /*= 80*/) {
 
     // Serve the OpenAPI YAML from SD at /swagger/openapi.yaml
     server->on("/swagger/openapi.yaml", HTTP_GET, []() {
-        if (!SD.begin()) { sendCorsJson(404, "text/plain", "SD not available"); return; }
-        if (!SD.exists("/docs/openapi.yaml")) { sendCorsJson(404, "text/plain", "openapi.yaml not found on SD"); return; }
-        File f = SD.open("/docs/openapi.yaml", FILE_READ);
+    if (!sdReady) { sendCorsJson(404, "text/plain", "SD not available"); return; }
+    if (!SD.exists("/docs/openapi.yaml")) { sendCorsJson(404, "text/plain", "openapi.yaml not found on SD"); return; }
+    File f = SD.open("/docs/openapi.yaml", FILE_READ);
         if (!f) { sendCorsJson(500, "text/plain", "Failed to open openapi.yaml"); return; }
         setCorsHeaders();
         server->streamFile(f, "application/x-yaml");
