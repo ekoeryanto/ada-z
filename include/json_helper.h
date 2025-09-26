@@ -5,17 +5,14 @@
 #include <ArduinoJson.h>
 #if defined(ARDUINOJSON_VERSION_MAJOR)
 #pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-// Alias used across the project: DynamicJsonDocument for heap-allocated documents.
-// Use DynamicJsonDocument with explicit capacity to avoid ambiguous construction.
-using JsonDocDyn = DynamicJsonDocument;
+// ArduinoJson v7+ uses JsonDocument for both static and dynamic allocation.
+// The capacity is specified in the constructor.
 #pragma GCC diagnostic pop
 #endif
 
-// Serialize a JsonDocDyn (DynamicJsonDocument) to String safely
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-String buildJsonString(JsonDocDyn &doc);
+String buildJsonString(JsonDocument &doc);
 
 // Round a float to N decimal places (default 2) and return as float
 inline float roundToDecimals(float v, int decimals = 2) {

@@ -3,9 +3,8 @@
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
 // Preferences helpers
-#include <Preferences.h>
-#include "preferences_helper.h"
 #include "calibration_keys.h"
+#include "storage_helpers.h"
 
 static Adafruit_ADS1115 ads; // 16-bit ADC
 static uint8_t adsAddress = 0x48;
@@ -42,13 +41,8 @@ bool setupCurrentPressureSensor(uint8_t i2cAddress) {
         for (int i = 0; i < ADS_MAX_BUF; ++i) adsBuf[ch][i] = 0;
     }
     // Load smoothing params from NVS if present
-    {
-        Preferences p;
-        safePreferencesBegin(p, "ads_cfg");
-        adsEmaAlpha = safeGetFloat(p, "ema_alpha", adsEmaAlpha);
-        adsNumAvg = (int)p.getInt("num_avg", adsNumAvg);
-        p.end();
-    }
+    adsEmaAlpha = loadFloatFromNVSns("ads_cfg", "ema_alpha", adsEmaAlpha);
+    adsNumAvg = loadIntFromNVSns("ads_cfg", "num_avg", adsNumAvg);
     Serial.print("ADS1115 initialized at 0x");
     Serial.println(String(adsAddress, HEX));
     return true;
@@ -80,24 +74,14 @@ float readAdsMa(uint8_t channel, float shunt_ohm, float amp_gain) {
     int16_t raw = readAdsRaw(channel);
     float mv = adsRawToMv(raw);
     // Determine per-channel mode (shunt vs TP5551)
-    int mode = ADS_MODE_TP5551;
-    // Use Preferences helper to get mode if present
-    {
-        Preferences p;
-        safePreferencesBegin(p, "ads_cfg");
-        char mkey[16]; snprintf(mkey, sizeof(mkey), "mode_%d", channel);
-        if (p.isKey(mkey)) mode = p.getInt(mkey, ADS_MODE_SHUNT);
-        p.end();
-    }
+    char mkey[16]; snprintf(mkey, sizeof(mkey), "mode_%d", channel);
+    int mode = loadIntFromNVSns("ads_cfg", mkey, ADS_MODE_TP5551);
 
         if (mode == ADS_MODE_TP5551) {
         // TP5551 outputs a voltage proportional to current. Use per-channel tp_scale
         // which is mV per mA. Default estimated from previous shunt+amp default: 119 * 2 = 238 mV/mA
-    Preferences p;
-    safePreferencesBegin(p, CAL_NAMESPACE);
     char skey[16]; snprintf(skey, sizeof(skey), "tp_scale_%d", channel);
-    float tp_scale = safeGetFloat(p, skey, 238.0f);
-    p.end();
+    float tp_scale = loadFloatFromNVSns(CAL_NAMESPACE, skey, 238.0f);
         if (tp_scale <= 0.0f) return 0.0f;
     float m = mv / tp_scale; // mA
     if (m < 0.0f) m = 0.0f; // avoid tiny negative currents from floating inputs
@@ -182,44 +166,25 @@ float computePressureBarFromMa(float current_mA, float current_init_mA, float ra
     return p;
 }
 
-// Preferences-backed helpers for per-channel shunt and amp gain
-#include <Preferences.h>
-#include "preferences_helper.h"
-
+// NVS-backed helpers for per-channel shunt and amp gain
 float getAdsShuntOhm(uint8_t channel) {
-    Preferences p;
     char key[16];
     snprintf(key, sizeof(key), "shunt_%d", channel);
-    safePreferencesBegin(p, "ads_cfg");
-    float v = safeGetFloat(p, key, DEFAULT_SHUNT_OHM);
-    p.end();
-    return v;
+    return loadFloatFromNVSns("ads_cfg", key, DEFAULT_SHUNT_OHM);
 }
 
 float getAdsAmpGain(uint8_t channel) {
-    Preferences p;
     char key[16];
     snprintf(key, sizeof(key), "amp_%d", channel);
-    safePreferencesBegin(p, "ads_cfg");
-    float v = safeGetFloat(p, key, DEFAULT_AMP_GAIN);
-    p.end();
-    return v;
+    return loadFloatFromNVSns("ads_cfg", key, DEFAULT_AMP_GAIN);
 }
 
 int getAdsChannelMode(uint8_t channel) {
-    Preferences p;
-    safePreferencesBegin(p, "ads_cfg");
     char key[16]; snprintf(key, sizeof(key), "mode_%d", channel);
-    int m = p.getInt(key, ADS_MODE_TP5551);
-    p.end();
-    return m;
+    return loadIntFromNVSns("ads_cfg", key, ADS_MODE_TP5551);
 }
 
 float getAdsTpScale(uint8_t channel) {
-    Preferences p;
-    safePreferencesBegin(p, CAL_NAMESPACE);
     char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", channel);
-    float v = safeGetFloat(p, key, 238.0f);
-    p.end();
-    return v;
+    return loadFloatFromNVSns(CAL_NAMESPACE, key, 238.0f);
 }

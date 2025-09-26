@@ -8,6 +8,10 @@
 void setupSdLogger();
 void logSensorDataToSd(String data);
 
+// Pending notifications on SD (JSON lines). Append per-second payloads and flush every N minutes.
+bool appendPendingNotification(const String &jsonLine);
+bool flushPendingNotifications();
+
 // Error log helpers
 void logErrorToSd(const String &msg);
 String readErrorLog(int maxLines = -1); // maxLines=-1 => return whole file

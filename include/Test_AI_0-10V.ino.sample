@@ -1,24 +1,10 @@
-#define AI1 35
-#define AI2 34
-#define AI3 36
-#define NUM_SAMPLES 20  // Jumlah sampel untuk smoothing
+// This sample has been moved to docs/Test_AI_0-10V.ino.sample
+// Please use the copy under the docs/ directory. The include/ copy has been
+// retained only as a pointer and is no longer an active sample.
 
-void setup() {
-  Serial.begin(115200);
-}
+// docs/Test_AI_0-10V.ino.sample is the canonical location of this sample file.
 
-void loop() {
-  int sumADC1 = 0, sumADC2 = 0, sumADC3 = 0;
-
-  // Ambil beberapa sampel untuk masing-masing channel
-  for (int i = 0; i < NUM_SAMPLES; i++) {
-    sumADC1 += analogRead(AI1);
-    sumADC2 += analogRead(AI2);
-    sumADC3 += analogRead(AI3);
-    delay(5); // Delay kecil antar sampel
-  }
-
-  // Hitung rata-rata dari sampel untuk smoothing
+// (Original demo code removed to avoid duplication.)
   int adc1 = sumADC1 / NUM_SAMPLES;
   int adc2 = sumADC2 / NUM_SAMPLES;
   int adc3 = sumADC3 / NUM_SAMPLES;

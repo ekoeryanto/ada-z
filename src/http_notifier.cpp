@@ -2,27 +2,19 @@
 #include "config.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
-#pragma GCC diagnostic pop
 #include <RTClib.h> // For DateTime object
 #include "time_sync.h" // For extern declarations of rtc and rtcFound
 #include "voltage_pressure_sensor.h"
 #include "sensor_calibration_types.h"
 #include "calibration_keys.h"
-#include <Preferences.h>
 #include "device_id.h"
+#include "storage_helpers.h"
 #include "current_pressure_sensor.h"
 #include "pins_config.h"
 #include "sensors_config.h"
 #include "sample_store.h"
 #include "json_helper.h"
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-// Using modern ArduinoJson APIs below (no deprecated createNestedX())
-#pragma GCC diagnostic pop
 
 unsigned long lastHttpNotificationMillis = 0;
 static uint8_t notificationMode = DEFAULT_NOTIFICATION_MODE;
@@ -64,8 +56,8 @@ void sendHttpNotification(int sensorIndex, int rawADC, float smoothedADC, float 
 // consistent with batch ADS entries and then route through the same webhook/serial paths.
 void sendAdsNotification(int adsChannel, int16_t rawAds, float mv, float ma) {
     // Attempt to sync time but do not abort sending; include diagnostic fields
-    bool time_ok = ensureTimeSynced();
-    JsonDocDyn doc(512);
+    bool time_ok = ensureTimeSynced();    
+    JsonDocument doc;
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
@@ -133,7 +125,7 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
     // Attempt to sync time but do not abort sending; include diagnostic fields
     bool time_ok = ensureTimeSynced();
     // Build payload according to configured payload type
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");
@@ -291,7 +283,7 @@ void routeSensorNotification(int sensorIndex, int rawADC, float smoothedADC, flo
     // Attempt to sync time but do not abort sending; include diagnostic fields
     bool time_ok = ensureTimeSynced();
     // Build RTU-grouped `tags` payload for a single sensor
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
     doc["timestamp"] = getIsoTimestamp();
     doc["time_synced"] = time_ok ? 1 : 0;
     doc["timestamp_source"] = time_ok ? String("ntp/rtc/system") : String("unsynced");

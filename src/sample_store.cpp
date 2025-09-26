@@ -1,6 +1,6 @@
 #include "sample_store.h"
 #include <vector>
-#include <Preferences.h>
+#include "storage_helpers.h"
 
 static int g_totalSensors = 0;
 static int g_capacity = 0;
@@ -25,32 +25,32 @@ static String scntKey(int idx) { char b[32]; snprintf(b, sizeof(b), "scnt_%d", i
 
 // Persist a single sensor buffer into Preferences
 static void persistSensor(int idx) {
-    Preferences p;
-    p.begin(PREF_NS, false);
     size_t bytes = sizeof(SampleEntry) * g_capacity;
-    p.putBytes(sbufKey(idx).c_str(), buffers[idx].data(), bytes);
-    p.putInt(swiKey(idx).c_str(), writeIndex[idx]);
-    p.putInt(scntKey(idx).c_str(), filledCount[idx]);
-    p.end();
+    saveBytesToNVSns(PREF_NS, sbufKey(idx).c_str(), buffers[idx].data(), bytes);
+    saveIntToNVSns(PREF_NS, swiKey(idx).c_str(), writeIndex[idx]);
+    saveIntToNVSns(PREF_NS, scntKey(idx).c_str(), filledCount[idx]);
 }
 
 // Load a single sensor buffer from Preferences if present
 static void loadSensor(int idx) {
-    Preferences p;
-    p.begin(PREF_NS, false);
     size_t expected = sizeof(SampleEntry) * g_capacity;
-    size_t have = p.getBytesLength(sbufKey(idx).c_str());
+    size_t have = getBytesLengthFromNVSns(PREF_NS, sbufKey(idx).c_str());
     if (have == expected) {
-        p.getBytes(sbufKey(idx).c_str(), buffers[idx].data(), expected);
-        writeIndex[idx] = p.getInt(swiKey(idx).c_str(), 0);
-        filledCount[idx] = p.getInt(scntKey(idx).c_str(), g_capacity);
+        if (!loadBytesFromNVSns(PREF_NS, sbufKey(idx).c_str(), buffers[idx].data(), expected)) {
+            // fallback to empty
+            writeIndex[idx] = 0;
+            filledCount[idx] = 0;
+            for (int j = 0; j < g_capacity; ++j) buffers[idx][j].raw = INT_MIN;
+            return;
+        }
+        writeIndex[idx] = loadIntFromNVSns(PREF_NS, swiKey(idx).c_str(), 0);
+        filledCount[idx] = loadIntFromNVSns(PREF_NS, scntKey(idx).c_str(), g_capacity);
     } else {
         // mark empty
         writeIndex[idx] = 0;
         filledCount[idx] = 0;
         for (int j = 0; j < g_capacity; ++j) buffers[idx][j].raw = INT_MIN;
     }
-    p.end();
 }
 
 void initSampleStore(int totalSensors, int samplesPerSensor) {

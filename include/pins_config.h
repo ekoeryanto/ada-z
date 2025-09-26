@@ -36,8 +36,6 @@
 #define SD_SCK 18    // Default ESP32 SCK pin
 
 // I2C pins for ADS1115 and RTC
-
-// I2C pins for ADS1115 and RTC
 #define I2C_SDA 21
 #define I2C_SCL 22
 

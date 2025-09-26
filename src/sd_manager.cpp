@@ -1,6 +1,5 @@
 #include "sd_manager.h"
 #include "storage_helpers.h"
-#include <Preferences.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 // time helpers from project (isRtcPresent, getRtcEpoch, getIsoTimestamp)
@@ -66,15 +65,10 @@ bool logToSD(const String &csvLine) {
 
 // Internal: get last_uploaded_epoch from Preferences
 static unsigned long getLastUploadedEpoch() {
-    Preferences p; p.begin(PREF_NAMESPACE_LOCAL, true); // read-only
-    unsigned long v = p.getULong(PREF_LAST_UPLOADED, 0);
-    p.end();
-    return v;
+    return loadULongFromNVSns(PREF_NAMESPACE_LOCAL, PREF_LAST_UPLOADED, 0UL);
 }
 static void setLastUploadedEpoch(unsigned long epoch) {
-    Preferences p; p.begin(PREF_NAMESPACE_LOCAL, false);
-    p.putULong(PREF_LAST_UPLOADED, epoch);
-    p.end();
+    saveULongToNVSns(PREF_NAMESPACE_LOCAL, PREF_LAST_UPLOADED, epoch);
 }
 
 // Read CSV and collect rows newer than (now - minutes)

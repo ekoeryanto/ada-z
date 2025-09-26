@@ -2,7 +2,7 @@
 #include "config.h"
 #include <WiFi.h>
 #include <time.h>
-#include <Preferences.h>
+#include "storage_helpers.h"
 #include "sd_logger.h"
 
 // Global variables defined here
@@ -12,7 +12,6 @@ static bool timeSyncInitiated = false;
 static unsigned long lastNtpAttempt = 0;
 static unsigned long lastNtpSuccess = 0;
 static bool pendingRtcSync = false; // true when we want to update RTC after NTP success
-static Preferences preferences; // local Preferences instance for time persistence
 const char* PREF_TIME_NS = "time";
 const char* PREF_LAST_NTP_EPOCH = "last_ntp";
 const char* PREF_LAST_NTP_ISO = "last_ntp_iso";
@@ -38,17 +37,12 @@ void syncNtp(bool updateRtcAfter) {
 }
 
 time_t getLastNtpSuccessEpoch() {
-    preferences.begin(PREF_TIME_NS, false);
-    unsigned long val = preferences.getULong(PREF_LAST_NTP_EPOCH, 0);
-    preferences.end();
+    unsigned long val = loadULongFromNVS(PREF_LAST_NTP_EPOCH);
     return (time_t)val;
 }
 
 String getLastNtpSuccessIso() {
-    preferences.begin(PREF_TIME_NS, false);
-    String s = preferences.getString(PREF_LAST_NTP_ISO, "");
-    preferences.end();
-    return s;
+    return loadStringFromNVS(PREF_LAST_NTP_ISO, String(""));
 }
 
 String getIsoTimestamp() {
@@ -100,14 +94,8 @@ bool isRtcPresent() {
 time_t getRtcEpoch() {
     if (!rtcFound) return 0;
     DateTime now = rtc.now();
-    struct tm tm_rtc;
-    tm_rtc.tm_year = now.year() - 1900;
-    tm_rtc.tm_mon = now.month() - 1;
-    tm_rtc.tm_mday = now.day();
-    tm_rtc.tm_hour = now.hour();
-    tm_rtc.tm_min = now.minute();
-    tm_rtc.tm_sec = now.second();
-    return mktime(&tm_rtc);
+    // The unixtime() method returns seconds since 1970, which is the UTC epoch.
+    return now.unixtime();
 }
 
 bool isPendingRtcSync() {
@@ -117,17 +105,12 @@ bool isPendingRtcSync() {
 void setRtcEnabled(bool enabled) {
     rtcEnabled = enabled;
     // persist the flag
-    preferences.begin(PREF_TIME_NS, false);
-    preferences.putInt(PREF_RTC_ENABLED, enabled ? 1 : 0);
-    preferences.end();
+    saveULongToNVSns(PREF_TIME_NS, PREF_RTC_ENABLED, enabled ? 1UL : 0UL);
 }
 
 bool getRtcEnabled() {
     // read persisted value if preferences available
-    preferences.begin(PREF_TIME_NS, false);
-    int v = preferences.getInt(PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED);
-    preferences.end();
-    rtcEnabled = (v != 0);
+    rtcEnabled = loadBoolFromNVSns(PREF_TIME_NS, PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED != 0);
     return rtcEnabled;
 }
 
@@ -148,10 +131,8 @@ void checkNtpAndUpdateRtc() {
                 } else {
                     isoBuf[0] = '\0';
                 }
-                preferences.begin(PREF_TIME_NS, false);
-                preferences.putULong(PREF_LAST_NTP_EPOCH, (unsigned long)nowEpoch);
-                preferences.putString(PREF_LAST_NTP_ISO, String(isoBuf));
-                preferences.end();
+                saveULongToNVS(PREF_LAST_NTP_EPOCH, (unsigned long)nowEpoch);
+                saveStringToNVS(PREF_LAST_NTP_ISO, String(isoBuf));
                 timeSyncInitiated = false; // Sync is complete
 
                 if (rtcFound && pendingRtcSync) {
@@ -197,10 +178,7 @@ void printCurrentTime() {
 
 void setupTimeSync() {
     // Load persisted RTC enabled flag
-    preferences.begin(PREF_TIME_NS, false);
-    int v = preferences.getInt(PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED);
-    preferences.end();
-    rtcEnabled = (v != 0);
+    rtcEnabled = (loadIntFromNVSns(PREF_TIME_NS, PREF_RTC_ENABLED, DEFAULT_RTC_ENABLED) != 0);
 
     if (!rtcEnabled) {
         Serial.println("RTC disabled by configuration; skipping RTC init.");

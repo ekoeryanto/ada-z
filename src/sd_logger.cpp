@@ -1,24 +1,18 @@
 #include "sd_logger.h"
 #include <SPI.h> // Required for SD library
 #include "pins_config.h" // For SD_CS pin
-
-// Global variable defined here
-#include "sd_logger.h"
-#include <SPI.h> // Required for SD library
-#include "pins_config.h" // For SD_CS pin
-#include <Preferences.h>
 #include "config.h"
+#include "storage_helpers.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
 
 // Global variable defined here
 bool sdCardFound = false;
 static bool sdEnabled = true;
-static Preferences sdPreferences;
 
 void setupSdLogger() {
     // Load persisted SD enabled flag
-    sdPreferences.begin("sd", false);
-    sdEnabled = sdPreferences.getInt(PREF_SD_ENABLED, DEFAULT_SD_ENABLED) != 0;
-    sdPreferences.end();
+    sdEnabled = loadBoolFromNVSns("sd", PREF_SD_ENABLED, DEFAULT_SD_ENABLED != 0);
 
     if (!sdEnabled) {
         Serial.println("SD logging disabled by configuration.");
@@ -58,6 +52,51 @@ void logSensorDataToSd(String data) {
     } else {
         Serial.println("Error opening datalog.csv");
     }
+}
+
+// Append a JSON line to pending notification file. Returns true on success.
+bool appendPendingNotification(const String &jsonLine) {
+    if (!sdCardFound) return false;
+    File f = SD.open("/pending_notifications.jsonl", FILE_APPEND);
+    if (!f) return false;
+    f.println(jsonLine);
+    f.close();
+    return true;
+}
+
+// Flush pending notifications: read the file and attempt to send via HTTP using existing upload logic
+bool flushPendingNotifications() {
+    if (!sdCardFound) return false;
+    if (WiFi.status() != WL_CONNECTED) return false;
+    // Read all pending lines
+    File f = SD.open("/pending_notifications.jsonl", FILE_READ);
+    if (!f) return false;
+    String body;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+        body += line;
+        body += "\n";
+    }
+    f.close();
+
+    if (body.length() == 0) return true; // nothing to do
+
+    // Send as text/plain (line-delimited JSON) to configured HTTP_NOTIFICATION_URL
+    HTTPClient http;
+    http.begin(HTTP_NOTIFICATION_URL);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST((uint8_t*)body.c_str(), body.length());
+    bool ok = false;
+    if (code > 0 && code >= 200 && code < 300) ok = true;
+    http.end();
+
+    if (ok) {
+        // remove pending file
+        SD.remove("/pending_notifications.jsonl");
+    }
+    return ok;
 }
 
 // Append an error message with timestamp to /error.log
@@ -106,18 +145,13 @@ void clearErrorLog() {
 }
 
 void setSdEnabled(bool enabled) {
-    sdPreferences.begin("sd", false);
-    sdPreferences.putInt(PREF_SD_ENABLED, enabled ? 1 : 0);
-    sdPreferences.end();
+    saveULongToNVSns("sd", PREF_SD_ENABLED, enabled ? 1UL : 0UL);
     sdEnabled = enabled;
     if (!sdEnabled) sdCardFound = false;
 }
 
 bool getSdEnabled() {
-    sdPreferences.begin("sd", false);
-    int v = sdPreferences.getInt(PREF_SD_ENABLED, DEFAULT_SD_ENABLED);
-    sdPreferences.end();
-    sdEnabled = (v != 0);
+    sdEnabled = loadBoolFromNVSns("sd", PREF_SD_ENABLED, DEFAULT_SD_ENABLED != 0);
     return sdEnabled;
 }
 

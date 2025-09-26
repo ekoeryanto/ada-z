@@ -1,0 +1,60 @@
+# copied include/Test_AI_0-10V.ino.sample
+
+#define AI1 35
+#define AI2 34
+#define AI3 36
+#define NUM_SAMPLES 20  // Jumlah sampel untuk smoothing
+
+void setup() {
+  Serial.begin(115200);
+}
+
+void loop() {
+  int sumADC1 = 0, sumADC2 = 0, sumADC3 = 0;
+
+  // Ambil beberapa sampel untuk masing-masing channel
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    sumADC1 += analogRead(AI1);
+    sumADC2 += analogRead(AI2);
+    sumADC3 += analogRead(AI3);
+    delay(5); // Delay kecil antar sampel
+  }
+
+  // Hitung rata-rata dari sampel untuk smoothing
+  int adc1 = sumADC1 / NUM_SAMPLES;
+  int adc2 = sumADC2 / NUM_SAMPLES;
+  int adc3 = sumADC3 / NUM_SAMPLES;
+
+  float Vcal1 = convert010V(adc1);
+  float Vcal2 = convert010V(adc2);
+  float Vcal3 = convert010V(adc3);
+
+  Serial.print("AI1= "); Serial.print(adc1);
+  Serial.print(" | Vcal1= "); Serial.print(Vcal1); Serial.println(" V");
+
+  Serial.print("AI2= "); Serial.print(adc2);
+  Serial.print(" | Vcal2= "); Serial.print(Vcal2); Serial.println(" V");
+
+  Serial.print("AI3= "); Serial.print(adc3);
+  Serial.print(" | Vcal3= "); Serial.print(Vcal3); Serial.println(" V");
+
+  Serial.println("====================");
+
+  delay(500);
+}
+
+float convert010V(int adc){
+  float Vadc = adc / 4095.0 * 3.3;
+
+  float Volt = Vadc / 3.3 * 10.0;
+
+  float Vcal;
+
+  if(Vadc == 0.0){Vcal = 0.0;}
+  else if(Vadc > 0.01 && Vadc <= 0.96){Vcal = 1.0345 * Volt + 0.2897;}
+  else if(Vadc > 0.96 && Vadc <= 1.52){Vcal = 1.0029 * Volt + 0.3814;}
+  else if(Vadc > 1.52){Vcal = 0.932 * Volt + 0.7083;}
+  else if(Vadc == 3.3){Vcal = 10.0;}
+
+  return Vcal;
+}

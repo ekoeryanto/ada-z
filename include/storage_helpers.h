@@ -36,6 +36,32 @@ static String loadStringFromNVS(const char* key, const String &def = String(""))
     return v;
 }
 
+// Namespace-aware variants (specify NVS namespace explicitly)
+static void saveStringToNVSns(const char* ns, const char* key, const String &value) {
+    Preferences p;
+    p.begin(ns, false);
+    p.putString(key, value);
+    p.end();
+}
+
+static String loadStringFromNVSns(const char* ns, const char* key, const String &def = String("")) {
+    Preferences p;
+    p.begin(ns, false);
+    String v = p.getString(key, def);
+    p.end();
+    return v;
+}
+
+// Namespace-aware variants for basic types
+static void saveBoolToNVSns(const char* ns, const char* key, bool v) { Preferences p; p.begin(ns, false); p.putBool(key, v); p.end(); }
+static bool loadBoolFromNVSns(const char* ns, const char* key, bool def = false) { Preferences p; p.begin(ns, false); bool v = p.getBool(key, def); p.end(); return v; }
+
+static void saveULongToNVSns(const char* ns, const char* key, unsigned long v) { Preferences p; p.begin(ns, false); p.putULong(key, v); p.end(); }
+static unsigned long loadULongFromNVSns(const char* ns, const char* key, unsigned long def = 0) { Preferences p; p.begin(ns, false); unsigned long v = p.getULong(key, def); p.end(); return v; }
+
+static void saveFloatToNVSns(const char* ns, const char* key, float v) { Preferences p; p.begin(ns, false); p.putFloat(key, v); p.end(); }
+static float loadFloatFromNVSns(const char* ns, const char* key, float def = 0.0f) { Preferences p; p.begin(ns, false); float v = p.getFloat(key, def); p.end(); return v; }
+
 static void saveBoolToNVS(const char* key, bool v) {
     Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putBool(key, v); p.end();
 }
@@ -55,6 +81,38 @@ static void saveFloatToNVS(const char* key, float v) {
 }
 static float loadFloatFromNVS(const char* key, float def = 0.0f) {
     Preferences p; p.begin(SH_PREF_NAMESPACE, false); float v = p.getFloat(key, def); p.end(); return v;
+}
+
+// Int helpers (Preferences uses 32-bit ints)
+static void saveIntToNVS(const char* key, int v) { Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putInt(key, v); p.end(); }
+static int loadIntFromNVS(const char* key, int def = 0) { Preferences p; p.begin(SH_PREF_NAMESPACE, false); int v = p.getInt(key, def); p.end(); return v; }
+
+// Namespace-aware int helpers
+static void saveIntToNVSns(const char* ns, const char* key, int v) { Preferences p; p.begin(ns, false); p.putInt(key, v); p.end(); }
+static int loadIntFromNVSns(const char* ns, const char* key, int def = 0) { Preferences p; p.begin(ns, false); int v = p.getInt(key, def); p.end(); return v; }
+
+// Byte array helpers for storing binary blobs
+static bool saveBytesToNVSns(const char* ns, const char* key, const void* data, size_t len) {
+    Preferences p; p.begin(ns, false);
+    size_t written = p.putBytes(key, data, len);
+    p.end();
+    return written == len;
+}
+
+static size_t getBytesLengthFromNVSns(const char* ns, const char* key) {
+    Preferences p; p.begin(ns, false);
+    size_t len = p.getBytesLength(key);
+    p.end();
+    return len;
+}
+
+static bool loadBytesFromNVSns(const char* ns, const char* key, void* outBuf, size_t len) {
+    Preferences p; p.begin(ns, false);
+    size_t have = p.getBytesLength(key);
+    if (have != len) { p.end(); return false; }
+    p.getBytes(key, outBuf, len);
+    p.end();
+    return true;
 }
 
 // LittleFS helpers
@@ -97,7 +155,7 @@ static bool loadConfigFromLittleFS(const char* path, JsonDocument &out) {
 // High-level helpers: log sensor reading as JSON line (timestamp + sensor name + value)
 // timestampIso should be e.g. output of getIsoTimestamp() or similar
 static bool appendSensorLog(const char* path, const char* sensorId, const String &timestampIso, float value) {
-    StaticJsonDocument<256> d;
+    JsonDocument d;
     d["ts"] = timestampIso;
     d["sensor"] = sensorId;
     d["value"] = value;

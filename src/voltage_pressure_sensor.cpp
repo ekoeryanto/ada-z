@@ -62,35 +62,25 @@ float getSmoothedVoltagePressure(int pinIndex) {
 
     // Apply calibration: calibration was stored as pressure vs RAW ADC values
     // Use the smoothed ADC (raw ADC units) when applying the stored scale/offset
-    float rawAdc = round(smoothedADC[pinIndex]);
-
-    // If calibration is the default mapping (0..4095 -> 0..10 bar) prefer converting via
-    // convert010V so the reported pressure exactly matches the voltage conversion curve.
     SensorCalibration cal = voltageSensorCalibrations[pinIndex];
-    if (cal.zeroRawAdc == 0.0f && cal.spanRawAdc == 4095.0f && cal.zeroPressureValue == 0.0f && cal.spanPressureValue == 10.0f) {
-        // convert010V expects an ADC value -> returns volts (0-10V); treat volts as bar
-        float volts = convert010V((int)rawAdc);
-        return volts; // report volts as bar for default mapping
-    }
 
     // Apply linear calibration for the specific sensor: pressure = rawAdc * scale + offset
-    float calibratedPressure = (rawAdc * cal.scale) + cal.offset;
+    float calibratedPressure = (smoothedADC[pinIndex] * cal.scale) + cal.offset;
 
     return calibratedPressure;
 }
 
 // (Legacy wrappers removed) Use indexed APIs instead
 
-#include <Preferences.h> // Include Preferences for loading calibration
-
-extern Preferences preferences; // Declare extern for Preferences object
-
 #include "calibration_keys.h" // For CAL_ZERO_RAW_ADC, etc.
+
+#include "storage_helpers.h"
+// Note: we avoid using a global Preferences instance; helpers open/close per operation.
 
 
 // Initialize ADC characterization (esp_adc_cal) for accurate conversions
 void initAdcCalibration() {
-    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_11db, ADC_WIDTH_BIT_12, 1100, &adc_chars);
     if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
         Serial.println("ADC calibrated using eFuse Vref");
     } else if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP) {
@@ -101,16 +91,13 @@ void initAdcCalibration() {
 }
 
 void loadVoltagePressureCalibration() {
-    // Open calibration namespace writable so NVS key creation doesn't log NOT_FOUND
-    preferences.begin(CAL_NAMESPACE, false); // Use the same namespace as web_api.cpp
-
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; i++) {
         String pinKey = String(VOLTAGE_SENSOR_PINS[i]); // Create key based on pin number
 
-        voltageSensorCalibrations[i].zeroRawAdc = preferences.getFloat((pinKey + "_" + CAL_ZERO_RAW_ADC).c_str(), 0.0);
-        voltageSensorCalibrations[i].spanRawAdc = preferences.getFloat((pinKey + "_" + CAL_SPAN_RAW_ADC).c_str(), 0.0);
-        voltageSensorCalibrations[i].zeroPressureValue = preferences.getFloat((pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), 0.0);
-        voltageSensorCalibrations[i].spanPressureValue = preferences.getFloat((pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), 0.0);
+        voltageSensorCalibrations[i].zeroRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_RAW_ADC).c_str(), 0.0f);
+        voltageSensorCalibrations[i].spanRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_RAW_ADC).c_str(), 0.0f);
+        voltageSensorCalibrations[i].zeroPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), 0.0f);
+        voltageSensorCalibrations[i].spanPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), 0.0f);
 
         // If no pressure calibration was stored (both zero), apply sensible default mapping
         // that maps full ADC range to 0..10 bar for 0-10V sensors.
@@ -143,7 +130,6 @@ void loadVoltagePressureCalibration() {
                       voltageSensorCalibrations[i].offset,
                       voltageSensorCalibrations[i].scale);
     }
-    preferences.end();
 }
 
 void setupVoltagePressureSensor() {
@@ -152,10 +138,7 @@ void setupVoltagePressureSensor() {
 
     // Seed smoothed ADCs using vendor-style averaging to match sample code
     // Read persisted value if present
-    Preferences ptemp;
-    ptemp.begin("adc_cfg", false);
-    adcNumSamples = ptemp.getInt("num_samples", adcNumSamples);
-    ptemp.end();
+    adcNumSamples = loadIntFromNVSns("adc_cfg", "num_samples", adcNumSamples);
     const int SAMPLE_DELAY_MS = 2;
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
         int pin = VOLTAGE_SENSOR_PINS[i];
@@ -190,18 +173,13 @@ int getNumVoltageSensors() {
 void saveCalibrationForPin(int pinIndex, float zeroRawAdc, float spanRawAdc, float zeroPressureValue, float spanPressureValue) {
     if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return;
     String pinKey = String(VOLTAGE_SENSOR_PINS[pinIndex]);
-    preferences.begin(CAL_NAMESPACE, false);
-    preferences.putFloat((pinKey + "_" + CAL_ZERO_RAW_ADC).c_str(), zeroRawAdc);
-    preferences.putFloat((pinKey + "_" + CAL_SPAN_RAW_ADC).c_str(), spanRawAdc);
-    preferences.putFloat((pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), zeroPressureValue);
-    preferences.putFloat((pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), spanPressureValue);
-    preferences.end();
+    saveFloatToNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_RAW_ADC).c_str(), zeroRawAdc);
+    saveFloatToNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_RAW_ADC).c_str(), spanRawAdc);
+    saveFloatToNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), zeroPressureValue);
+    saveFloatToNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), spanPressureValue);
 
     // Verify write by reading back one of the values; if mismatch, log to SD
-    Preferences pcheck;
-    pcheck.begin(CAL_NAMESPACE, true);
-    float check = pcheck.getFloat((pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), -9999.0);
-    pcheck.end();
+    float check = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), -9999.0f);
     if (fabs(check - spanPressureValue) > 0.001f) {
         // Defer to SD logger if available
         String msg = String("Calibration write mismatch for pin ") + String(VOLTAGE_SENSOR_PINS[pinIndex]) + String(" wrote=") + String(spanPressureValue) + String(" read=") + String(check);
@@ -277,21 +255,12 @@ float getSmoothedADC(int pinIndex) {
 
 // Runtime getters/setters for ADC per-read sample count
 int getAdcNumSamples() {
-    extern Preferences preferences;
-    Preferences p;
-    p.begin("adc_cfg", true);
-    int v = p.getInt("num_samples", adcNumSamples);
-    p.end();
-    return v;
+    return loadIntFromNVSns("adc_cfg", "num_samples", adcNumSamples);
 }
 
 void setAdcNumSamples(int n) {
     if (n < 1) return;
-    extern Preferences preferences;
-    Preferences p;
-    p.begin("adc_cfg", false);
-    p.putInt("num_samples", n);
-    p.end();
+    saveIntToNVSns("adc_cfg", "num_samples", n);
     // Update runtime variable
     extern int adcNumSamples;
     adcNumSamples = n;

@@ -11,12 +11,8 @@
 #include "current_pressure_sensor.h"
 #include "device_id.h"
 #include "sample_store.h"
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
-#pragma GCC diagnostic pop
-#include <Preferences.h> // For persistent storage
-#include "preferences_helper.h"
+#include "storage_helpers.h"
 #include "json_helper.h"
 #include <WiFi.h>
 #include <Update.h>
@@ -33,7 +29,6 @@
 WebServer *server = nullptr;
 // Actual port WebServer is bound to (80 for STA, 8080 for AP/portal)
 int webServerPort = 0;
-Preferences preferences; // For NVS Flash
 
 // Helper: set common CORS headers for responses
 void setCorsHeaders() {
@@ -57,20 +52,16 @@ const char* PREF_HTTP_URL = "http_url";
 // Add other config keys as needed
 
 void saveConfig() {
-    preferences.begin(PREF_NAMESPACE, false);
-    // preferences.putString(PREF_HTTP_URL, HTTP_NOTIFICATION_URL); // Example: Save HTTP URL
-    // Save other config parameters here
-    preferences.end();
+    // Example: save HTTP_NOTIFICATION_URL if needed
+    // saveStringToNVSns(PREF_NAMESPACE, PREF_HTTP_URL, String(HTTP_NOTIFICATION_URL));
     Serial.println("Configuration saved.");
 }
 
 void loadConfig() {
-    preferences.begin(PREF_NAMESPACE, false); // Open writable to avoid NOT_FOUND when namespace missing
-    // For macros, you'd need to read into a global variable or pass around.
-    // For now, we'll just print it.
+    // Read persisted values from NVS and print for debug
+    String httpUrl = loadStringFromNVSns(PREF_NAMESPACE, PREF_HTTP_URL, String("N/A"));
     Serial.print("Loaded HTTP URL: ");
-    Serial.println(preferences.getString(PREF_HTTP_URL, "N/A"));
-    preferences.end();
+    Serial.println(httpUrl);
     Serial.println("Configuration loaded.");
 }
 
@@ -85,7 +76,7 @@ void handleConfig() {
         Serial.print("Received config POST: ");
         Serial.println(body);
 
-                JsonDocDyn doc(1024);
+                JsonDocument doc;
         DeserializationError error = deserializeJson(doc, body);
 
         if (error) {
@@ -104,16 +95,14 @@ void handleConfig() {
         }
         if (doc["api_key"].is<String>()) {
             String newKey = doc["api_key"].as<String>();
-            Preferences p; p.begin(PREF_NAMESPACE, false);
-            p.putString("api_key", newKey);
-            p.end();
+            saveStringToNVSns(PREF_NAMESPACE, "api_key", newKey);
             Serial.println("API key saved to NVS (config/api_key)");
         }
 
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Config received\"}");
     } else {
         // Handle GET request for current config
-            JsonDocDyn doc(1024);
+            JsonDocument doc;
         // doc["http_notification_url"] = HTTP_NOTIFICATION_URL; // Example: Send current URL
         // Add other config parameters to send
 
@@ -124,13 +113,11 @@ void handleConfig() {
 }
 
 void loadCalibration() {
-    preferences.begin(CAL_NAMESPACE, false);
-    // Load calibration values
-    float zeroRawAdc = preferences.getFloat(CAL_ZERO_RAW_ADC, 0.0);
-    float spanRawAdc = preferences.getFloat(CAL_SPAN_RAW_ADC, 0.0);
-    float zeroPressureValue = preferences.getFloat(CAL_ZERO_PRESSURE_VALUE, 0.0);
-    float spanPressureValue = preferences.getFloat(CAL_SPAN_PRESSURE_VALUE, 0.0);
-    preferences.end();
+    // Load calibration values from NVS (if present) for debugging
+    float zeroRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, CAL_ZERO_RAW_ADC, 0.0f);
+    float spanRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, CAL_SPAN_RAW_ADC, 0.0f);
+    float zeroPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, CAL_ZERO_PRESSURE_VALUE, 0.0f);
+    float spanPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, CAL_SPAN_PRESSURE_VALUE, 0.0f);
 
     Serial.println("Calibration loaded:");
     Serial.printf("  Zero Raw ADC: %.2f\n", zeroRawAdc);
@@ -167,7 +154,7 @@ void handleCalibrate() {
         Serial.print("Received calibrate POST: ");
         Serial.println(body);
 
-                JsonDocDyn doc(1024);
+                JsonDocument doc;
         DeserializationError error = deserializeJson(doc, body);
 
         if (error) {
@@ -252,7 +239,7 @@ void handleCalibrate() {
         }
 
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-            JsonDocDyn doc(1024);
+            JsonDocument doc;
         doc["pin_index"] = pinIndex;
         doc["pin"] = getVoltageSensorPin(pinIndex);
     doc["tag"] = String("AI") + String(pinIndex + 1);
@@ -292,15 +279,24 @@ void setupWebServer(int port /*= 80*/) {
         handleConfig();
     });
     server->on("/time/status", HTTP_GET, []() {
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
+        char isoBuf[32];
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
-        doc["rtc_iso"] = isRtcPresent() ? String(ctime(&rtcEpoch)) : String("");
+        if (isRtcPresent()) {
+            struct tm *tm_rtc = gmtime(&rtcEpoch);
+            strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
+            doc["rtc_iso"] = String(isoBuf);
+        } else {
+            doc["rtc_iso"] = "";
+        }
         time_t sysEpoch = time(nullptr);
+        struct tm *tm_sys = gmtime(&sysEpoch);
         doc["system_epoch"] = (unsigned long)sysEpoch;
-        doc["system_iso"] = String(ctime(&sysEpoch));
+        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
+        doc["system_iso"] = String(isoBuf);
         doc["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
         doc["last_ntp_iso"] = getLastNtpSuccessIso();
         doc["pending_rtc_sync"] = isPendingRtcSync() ? 1 : 0;
@@ -309,18 +305,8 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    // Read a single sensor by tag (supports query ?tag=AI1 or path /tag/AI1)
-    // Default sampling is 100; can be overridden with ?sampling=N
-    server->on("/tag", HTTP_GET, []() {
-        String tag;
-        if (server->hasArg("tag")) {
-            tag = server->arg("tag");
-        } else {
-            // no tag query; require path style /tag/<TAG>
-            String uri = server->uri();
-            if (uri.startsWith("/tag/")) tag = uri.substring(5);
-        }
-
+    // Helper function to handle tag-based sensor reading logic
+    auto handleTagRead = [](const String& tag) {
         int sampling = 100;
         if (server->hasArg("sampling")) sampling = server->arg("sampling").toInt();
         if (sampling <= 0) sampling = 100;
@@ -339,73 +325,51 @@ void setupWebServer(int port /*= 80*/) {
         int pin = getVoltageSensorPin(pinIndex);
         unsigned long sum = 0;
         for (int i = 0; i < sampling; ++i) {
-            int raw = analogRead(pin);
-            sum += (unsigned long)raw;
+            sum += (unsigned long)analogRead(pin);
             delay(1);
         }
-    float avgRaw = ((float)sum) / ((float)sampling);
+        float avgRaw = ((float)sum) / ((float)sampling);
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
         float converted = (avgRaw * cal.scale) + cal.offset;
 
-        JsonDocDyn outDoc(256);
+        JsonDocument outDoc;
         outDoc["tag"] = tag;
         outDoc["pin_index"] = pinIndex;
         outDoc["pin"] = pin;
         outDoc["samples"] = sampling;
         outDoc["measured_raw_avg"] = avgRaw;
-        JsonObject conv = outDoc["converted"].to<JsonObject>();
-        conv["value"] = roundToDecimals(converted, 2);
-        conv["unit"] = "bar";
+        outDoc["converted"]["value"] = roundToDecimals(converted, 2);
+        outDoc["converted"]["unit"] = "bar";
 
         String out;
         serializeJson(outDoc, out);
         sendCorsJson(200, "application/json", out);
+    };
+
+    // Read a single sensor by tag (supports query ?tag=AI1 or path /tag/AI1)
+    // Default sampling is 100; can be overridden with ?sampling=N
+    server->on("/tag", HTTP_GET, [handleTagRead]() {
+        String tag;
+        if (server->hasArg("tag")) {
+            tag = server->arg("tag");
+        } else {
+            // no tag query; require path style /tag/<TAG>
+            String uri = server->uri();
+            if (uri.startsWith("/tag/")) tag = uri.substring(5);
+        }
+        handleTagRead(tag);
     });
 
     // Provide support for path-style /tag/AI1 by routing through notFound handler
-    server->onNotFound([]() {
+    server->onNotFound([handleTagRead]() {
         String uri = server->uri();
         if (!uri.startsWith("/tag/")) {
             // default 404
             sendCorsJson(404, "application/json", "{\"status\":\"error\",\"message\":\"Not found\"}");
             return;
         }
-
         String tag = uri.substring(5);
-        int sampling = 100;
-        if (server->hasArg("sampling")) sampling = server->arg("sampling").toInt();
-        if (sampling <= 0) sampling = 100;
-
-        int pinIndex = tagToIndex(tag);
-        if (pinIndex < 0) {
-            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown tag\"}");
-            return;
-        }
-
-        int pin = getVoltageSensorPin(pinIndex);
-        unsigned long sum = 0;
-        for (int i = 0; i < sampling; ++i) {
-            int raw = analogRead(pin);
-            sum += (unsigned long)raw;
-            delay(1);
-        }
-    float avgRaw = ((float)sum) / ((float)sampling);
-        struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-        float converted = (avgRaw * cal.scale) + cal.offset;
-
-        JsonDocDyn outDoc(256);
-        outDoc["tag"] = tag;
-        outDoc["pin_index"] = pinIndex;
-        outDoc["pin"] = pin;
-        outDoc["samples"] = sampling;
-        outDoc["measured_raw_avg"] = avgRaw;
-        JsonObject conv = outDoc["converted"].to<JsonObject>();
-        conv["value"] = roundToDecimals(converted, 2);
-        conv["unit"] = "bar";
-
-        String out;
-        serializeJson(outDoc, out);
-        sendCorsJson(200, "application/json", out);
+        handleTagRead(tag);
     });
     // Secure OTA update endpoint (multipart/form-data upload)
     server->on("/update", HTTP_POST, []() {
@@ -425,9 +389,7 @@ void setupWebServer(int port /*= 80*/) {
             auth_ok = false;
             update_begun = false;
             // read api key from NVS
-            Preferences p; p.begin(PREF_NAMESPACE, true);
-            String expected = p.getString("api_key", String(""));
-            p.end();
+            String expected = loadStringFromNVSns(PREF_NAMESPACE, "api_key", String(""));
             String authHeader = server->header("Authorization");
             String apiHeader = server->header("X-Api-Key");
             if (authHeader.length() > 0 && authHeader.startsWith("Bearer ")) {
@@ -467,12 +429,19 @@ void setupWebServer(int port /*= 80*/) {
     });
     // RTC read/set endpoints
     server->on("/time/rtc", HTTP_GET, []() {
-        JsonDocDyn doc(256);
+        JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
+        char isoBuf[32];
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
-        doc["rtc_iso"] = isRtcPresent() ? String(ctime(&rtcEpoch)) : String("");
+        if (isRtcPresent()) {
+            struct tm *tm_rtc = gmtime(&rtcEpoch);
+            strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
+            doc["rtc_iso"] = String(isoBuf);
+        } else {
+            doc["rtc_iso"] = "";
+        }
         String resp;
         serializeJson(doc, resp);
         sendCorsJson(200, "application/json", resp);
@@ -481,7 +450,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/time/rtc", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-        JsonDocDyn doc(256);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -523,7 +492,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
         String body = server->arg("plain");
-    JsonDocDyn doc(body.length() + 1);
+    JsonDocument doc;
         DeserializationError error = deserializeJson(doc, body);
         if (error) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid JSON\"}");
@@ -562,7 +531,7 @@ void setupWebServer(int port /*= 80*/) {
             // Reseed smoothed ADC so readings update immediately
             setupVoltagePressureSensor();
 
-            JsonDocDyn respDoc(256);
+            JsonDocument respDoc;
             respDoc["status"] = "success";
             respDoc["message"] = "Blocking span calibration applied";
             respDoc["pin_index"] = pinIndex;
@@ -615,7 +584,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/calibrate/default/pin", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing JSON body\"}"); return; }
     String body = server->arg("plain");
-            JsonDocDyn doc(256);
+            JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         int pinIndex = -1;
@@ -645,7 +614,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/adc/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -672,7 +641,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(512);
+    JsonDocument resp;
     JsonArray results = resp["results"].to<JsonArray>();
 
         for (auto const& kv : targets) {
@@ -726,7 +695,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/ads/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -749,7 +718,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(512);
+    JsonDocument resp;
     JsonArray results = resp["results"].to<JsonArray>();
 
         for (auto const& kv : targets) {
@@ -784,10 +753,7 @@ void setupWebServer(int port /*= 80*/) {
 
             // Persist into calibration namespace as key "tp_scale_%d"
             char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", ch);
-            Preferences pcal;
-            pcal.begin(CAL_NAMESPACE, false);
-            pcal.putFloat(key, new_tp_scale);
-            pcal.end();
+            saveFloatToNVSns(CAL_NAMESPACE, key, new_tp_scale);
 
             JsonObject r = results.add<JsonObject>();
             r["channel"] = ch;
@@ -808,7 +774,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -837,7 +803,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-    JsonDocDyn resp(512);
+    JsonDocument resp;
     JsonArray results = resp["results"].to<JsonArray>();
 
         // For each target, measure current smoothed ADC and save as span
@@ -878,7 +844,7 @@ void setupWebServer(int port /*= 80*/) {
     });
     server->on("/calibrate", handleCalibrate);
     server->on("/calibrate/all", HTTP_GET, []() {
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
             for (int i = 0; i < getNumVoltageSensors(); ++i) {
                 struct SensorCalibration cal = getCalibrationForPin(i);
             JsonObject obj = doc[String(i)].to<JsonObject>();
@@ -899,7 +865,7 @@ void setupWebServer(int port /*= 80*/) {
     // --- Sensors config endpoints ---
     server->on("/sensors/config", HTTP_GET, []() {
         int n = getConfiguredNumSensors();
-    JsonDocDyn doc(1024);
+    JsonDocument doc;
         doc["num_sensors"] = n;
     JsonArray arr = doc["sensors"].to<JsonArray>();
         for (int i = 0; i < n; ++i) {
@@ -920,7 +886,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
         String body = server->arg("plain");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\": \"Invalid JSON\"}");
@@ -931,9 +897,6 @@ void setupWebServer(int port /*= 80*/) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\": \"Missing sensors array\"}");
             return;
         }
-
-        Preferences p;
-        p.begin("sensors", false);
 
         JsonArray arr = doc["sensors"].as<JsonArray>();
         for (JsonObject sensor : arr) {
@@ -946,10 +909,10 @@ void setupWebServer(int port /*= 80*/) {
             // Persist
             String enKey = String(PREF_SENSOR_ENABLED_PREFIX) + String(idx);
             String ivKey = String(PREF_SENSOR_INTERVAL_PREFIX) + String(idx);
-            p.putInt(enKey.c_str(), enabled ? 1 : 0);
-            p.putULong(ivKey.c_str(), interval);
+            saveIntToNVSns("sensors", enKey.c_str(), enabled ? 1 : 0);
+            saveULongToNVSns("sensors", ivKey.c_str(), interval);
         }
-        p.end();
+        
 
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Sensor config updated\"}");
     });
@@ -959,7 +922,7 @@ void setupWebServer(int port /*= 80*/) {
         const int ads_channels = 2; // currently reporting ADS1115 ch 0..1
         String fromUnit = "";
         if (server->hasArg("convert_from")) fromUnit = server->arg("convert_from");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
         // Add normalized ISO timestamp using time_sync helper
         doc["timestamp"] = getIsoTimestamp();
         // Expose the RTU at top-level and create a flat `tags` array of sensor objects
@@ -1080,12 +1043,9 @@ void setupWebServer(int port /*= 80*/) {
 
     // Notification config endpoints
     server->on("/notifications/config", HTTP_GET, []() {
-    Preferences p;
-    p.begin(PREF_NAMESPACE, false);
-    int mode = p.getInt(PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
-    int payload = p.getInt(PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);
-    p.end();
-    JsonDocDyn doc(512);
+    int mode = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
+    int payload = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);    
+    JsonDocument doc;
     doc["mode"] = mode;
     doc["payload_type"] = payload;
         String resp;
@@ -1096,18 +1056,15 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/notifications/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
     String body = server->arg("plain");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, body);
     if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
         int mode = doc["mode"].is<int>() ? doc["mode"].as<int>() : DEFAULT_NOTIFICATION_MODE;
         int payload = doc["payload_type"].is<int>() ? doc["payload_type"].as<int>() : DEFAULT_NOTIFICATION_PAYLOAD_TYPE;
 
-        Preferences p;
-        p.begin(PREF_NAMESPACE, false);
-        p.putInt(PREF_NOTIFICATION_MODE, mode);
-        p.putInt(PREF_NOTIFICATION_PAYLOAD, payload);
-        p.end();
+    saveIntToNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, mode);
+    saveIntToNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, payload);
 
         setNotificationMode((uint8_t)mode);
         setNotificationPayloadType((uint8_t)payload);
@@ -1116,7 +1073,7 @@ void setupWebServer(int port /*= 80*/) {
     });
     // ADS channel configuration endpoints: view and set per-channel shunt and amp gain
     server->on("/ads/config", HTTP_GET, []() {
-    JsonDocDyn doc(512);
+    JsonDocument doc;
         JsonArray arr = doc["channels"].to<JsonArray>();
         for (int ch = 0; ch <= 1; ++ch) {
             JsonObject o = arr.add<JsonObject>();
@@ -1127,13 +1084,10 @@ void setupWebServer(int port /*= 80*/) {
             o["ads_mode"] = getAdsChannelMode(ch);
         }
         // Expose smoothing params
-        Preferences p2;
-        p2.begin("ads_cfg", false);
-        float ema = safeGetFloat(p2, "ema_alpha", 0.1f);
-        int numavg = p2.getInt("num_avg", 5);
-        p2.end();
-        doc["ema_alpha"] = ema;
-        doc["num_avg"] = numavg;
+    float ema = loadFloatFromNVSns("ads_cfg", "ema_alpha", 0.1f);
+    int numavg = loadIntFromNVSns("ads_cfg", "num_avg", 5);
+    doc["ema_alpha"] = ema;
+    doc["num_avg"] = numavg;
 
         String resp;
         serializeJson(doc, resp);
@@ -1144,55 +1098,52 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/ads/config", HTTP_PUT, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(512);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\": \"Invalid JSON\"}");
             return;
         }
         if (!doc["channels"].is<JsonArray>()) { sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\": \"Missing channels array\"}"); return; }
-        Preferences p;
-        p.begin("ads_cfg", false);
+        // Use storage helpers to persist ads_cfg values
+        // Preferences p;
+        // p.begin("ads_cfg", false);
         for (JsonObject chObj : doc["channels"].as<JsonArray>()) {
             int ch = chObj["channel"].as<int>();
             if (ch < 0 || ch > 3) continue;
             if (!chObj["shunt_ohm"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "shunt_%d", ch);
-                p.putFloat(key, (float)chObj["shunt_ohm"].as<float>());
+                saveFloatToNVSns("ads_cfg", key, (float)chObj["shunt_ohm"].as<float>());
             }
             if (!chObj["amp_gain"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "amp_%d", ch);
-                p.putFloat(key, (float)chObj["amp_gain"].as<float>());
+                saveFloatToNVSns("ads_cfg", key, (float)chObj["amp_gain"].as<float>());
             }
             if (!chObj["ads_mode"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "mode_%d", ch);
-                p.putInt(key, (int)chObj["ads_mode"].as<int>());
+                saveIntToNVSns("ads_cfg", key, (int)chObj["ads_mode"].as<int>());
             }
             if (!chObj["tp_scale_mv_per_ma"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", ch);
-                Preferences pcal;
-                pcal.begin(CAL_NAMESPACE, false);
-                pcal.putFloat(key, (float)chObj["tp_scale_mv_per_ma"].as<float>());
-                pcal.end();
+                saveFloatToNVSns(CAL_NAMESPACE, key, (float)chObj["tp_scale_mv_per_ma"].as<float>());
             }
         }
         if (!doc["ema_alpha"].isNull()) {
             float ema = (float)doc["ema_alpha"].as<float>();
-            p.putFloat("ema_alpha", ema);
+            saveFloatToNVSns("ads_cfg", "ema_alpha", ema);
             setAdsEmaAlpha(ema);
         }
         if (!doc["num_avg"].isNull()) {
             int na = (int)doc["num_avg"].as<int>();
-            p.putInt("num_avg", na);
+            saveIntToNVSns("ads_cfg", "num_avg", na);
             setAdsNumAvg(na);
         }
-        p.end();
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"ADS config saved\"}");
     });
 
     // ADC smoothing/runtime sample-store configuration
     server->on("/adc/config", HTTP_GET, []() {
-    JsonDocDyn doc(128);
+    JsonDocument doc;
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
         String resp;
@@ -1203,7 +1154,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/adc/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         bool changed = false;
@@ -1211,20 +1162,14 @@ void setupWebServer(int port /*= 80*/) {
             int ns = doc["adc_num_samples"].as<int>();
             setAdcNumSamples(ns);
             // Persist adc_num_samples so it survives reboot
-            Preferences pns;
-            pns.begin("adc_cfg", false);
-            pns.putInt("num_samples", ns);
-            pns.end();
+            saveIntToNVSns("adc_cfg", "num_samples", ns);
             changed = true;
         }
     if (!doc["samples_per_sensor"].isNull()) {
             int sp = doc["samples_per_sensor"].as<int>();
             resizeSampleStore(sp);
             // Persist the chosen capacity so reboots preserve it
-            Preferences p;
-            p.begin("adc_cfg", false);
-            p.putInt("samples_per_sensor", sp);
-            p.end();
+            saveIntToNVSns("adc_cfg", "samples_per_sensor", sp);
             changed = true;
         }
         if (changed) sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"ADC config updated\"}");
@@ -1240,55 +1185,50 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/ads/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         if (!doc["channels"].is<JsonArray>()) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing channels array\"}"); return; }
-        Preferences p;
-        p.begin("ads_cfg", false);
+        // Use storage_helpers to persist ads_cfg values
         for (JsonObject chObj : doc["channels"].as<JsonArray>()) {
             int ch = chObj["channel"].as<int>();
             if (ch < 0 || ch > 3) continue;
             if (!chObj["shunt_ohm"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "shunt_%d", ch);
-                p.putFloat(key, (float)chObj["shunt_ohm"].as<float>());
+                saveFloatToNVSns("ads_cfg", key, (float)chObj["shunt_ohm"].as<float>());
             }
             if (!chObj["amp_gain"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "amp_%d", ch);
-                p.putFloat(key, (float)chObj["amp_gain"].as<float>());
+                saveFloatToNVSns("ads_cfg", key, (float)chObj["amp_gain"].as<float>());
             }
             if (!chObj["ads_mode"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "mode_%d", ch);
-                p.putInt(key, (int)chObj["ads_mode"].as<int>());
+                saveIntToNVSns("ads_cfg", key, (int)chObj["ads_mode"].as<int>());
             }
             if (!chObj["tp_scale_mv_per_ma"].isNull()) {
                 char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", ch);
                 // Persist tp_scale into calibration namespace for unified access
-                Preferences pcal;
-                pcal.begin(CAL_NAMESPACE, false);
-                pcal.putFloat(key, (float)chObj["tp_scale_mv_per_ma"].as<float>());
-                pcal.end();
+                saveFloatToNVSns(CAL_NAMESPACE, key, (float)chObj["tp_scale_mv_per_ma"].as<float>());
             }
         }
         // Optionally accept smoothing params at top level
     if (!doc["ema_alpha"].isNull()) {
             float ema = (float)doc["ema_alpha"].as<float>();
-            p.putFloat("ema_alpha", ema);
+            saveFloatToNVSns("ads_cfg", "ema_alpha", ema);
             setAdsEmaAlpha(ema);
         }
     if (!doc["num_avg"].isNull()) {
             int na = (int)doc["num_avg"].as<int>();
-            p.putInt("num_avg", na);
+            saveIntToNVSns("ads_cfg", "num_avg", na);
             setAdsNumAvg(na);
         }
-        p.end();
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"ADS config saved\"}");
     });
     // Trigger notification(s) on demand: POST body may include { "sensor_index": int } or { "pin": int } (accepts legacy "pin_number" too)
     server->on("/notifications/trigger", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(256);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
     if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
@@ -1356,7 +1296,7 @@ void setupWebServer(int port /*= 80*/) {
     // Time config: allow enabling/disabling RTC while keeping NTP
     server->on("/time/config", HTTP_GET, []() {
         bool rtcEnabled = getRtcEnabled();
-    JsonDocDyn doc(128);
+    JsonDocument doc;
         doc["rtc_enabled"] = rtcEnabled ? 1 : 0;
         String resp;
         serializeJson(doc, resp);
@@ -1366,7 +1306,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/time/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(128);
+    JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
     if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         bool rtcEnabled = doc["rtc_enabled"].as<int>() != 0;
@@ -1384,7 +1324,7 @@ void setupWebServer(int port /*= 80*/) {
     // SD config: enable/disable SD logging while keeping webhook notifications
     server->on("/sd/config", HTTP_GET, []() {
     bool sd = getSdEnabled();
-    JsonDocDyn doc(128);
+    JsonDocument doc;
     doc["sd_enabled"] = sd ? 1 : 0;
         String resp;
         serializeJson(doc, resp);
@@ -1394,7 +1334,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/sd/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
-    JsonDocDyn doc(128);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, body);
     if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         bool sd = doc["sd_enabled"].as<int>() != 0;
@@ -1417,15 +1357,20 @@ void setupWebServer(int port /*= 80*/) {
 void handleTime();
 
 void handleTime() {
-    JsonDocDyn doc(256);
+    JsonDocument doc;
     time_t sysEpoch = time(nullptr);
+    char isoBuf[32];
+    struct tm *tm_sys = gmtime(&sysEpoch);
+    strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
     doc["system_epoch"] = (unsigned long)sysEpoch;
-    doc["system_iso"] = ctime(&sysEpoch);
+    doc["system_iso"] = String(isoBuf);
 
     if (isRtcPresent()) {
         time_t rtcEpoch = getRtcEpoch();
+        struct tm *tm_rtc = gmtime(&rtcEpoch);
+        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
-        doc["rtc_iso"] = ctime(&rtcEpoch);
+        doc["rtc_iso"] = String(isoBuf);
     } else {
         doc["rtc_epoch"] = 0;
         doc["rtc_iso"] = "";

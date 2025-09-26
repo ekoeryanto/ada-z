@@ -1,7 +1,7 @@
 #include "ota_updater.h"
 #include "config.h" // For OTA_PORT, OTA_PASSWORD, MDNS_HOSTNAME
 #include <ArduinoOTA.h>
-#include <Preferences.h>
+#include "storage_helpers.h"
 
 void setupOtaUpdater() {
     ArduinoOTA.setPort(OTA_PORT);
@@ -13,10 +13,7 @@ void setupOtaUpdater() {
     // If present and non-empty, use it as the ArduinoOTA password so both
     // HTTP /update and espota can share the same credential. Otherwise
     // fall back to the compile-time OTA_PASSWORD macro.
-    Preferences p;
-    p.begin("config", true);
-    String apiKey = p.getString("api_key", String(""));
-    p.end();
+    String apiKey = loadStringFromNVSns("config", "api_key", String(""));
     if (apiKey.length() > 0) {
         ArduinoOTA.setPassword(apiKey.c_str());
         Serial.println("OTA: using api_key from NVS as ArduinoOTA password");
