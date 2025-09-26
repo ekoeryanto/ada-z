@@ -14,8 +14,11 @@ static void registerWifiHandlers() {
     if (wifiHandlersRegistered) return;
     // Trigger NTP sync whenever the station gets an IP (reconnect)
     WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
-        Serial.println("WiFi event: STA_GOT_IP - triggering NTP sync");
+        Serial.println("WiFi event: STA_GOT_IP - triggering NTP sync and starting OTA");
+        // Trigger NTP sync immediately on IP acquisition
         syncNtp();
+        // Ensure OTA updater is started after we have a valid IP (espota listens on TCP 3232)
+        setupOtaUpdater();
     }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
     wifiHandlersRegistered = true;
 }

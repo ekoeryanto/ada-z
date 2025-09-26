@@ -1,6 +1,7 @@
 #include "ota_updater.h"
 #include "config.h" // For OTA_PORT, OTA_PASSWORD, MDNS_HOSTNAME
 #include <ArduinoOTA.h>
+#include <Preferences.h>
 
 void setupOtaUpdater() {
     ArduinoOTA.setPort(OTA_PORT);
@@ -8,7 +9,21 @@ void setupOtaUpdater() {
     String otaHost = WiFi.getHostname();
     if (otaHost.length() == 0) otaHost = String(MDNS_HOSTNAME);
     ArduinoOTA.setHostname(otaHost.c_str());
-    ArduinoOTA.setPassword(OTA_PASSWORD);
+    // Prefer an API key stored in NVS under namespace `config` key `api_key`.
+    // If present and non-empty, use it as the ArduinoOTA password so both
+    // HTTP /update and espota can share the same credential. Otherwise
+    // fall back to the compile-time OTA_PASSWORD macro.
+    Preferences p;
+    p.begin("config", true);
+    String apiKey = p.getString("api_key", String(""));
+    p.end();
+    if (apiKey.length() > 0) {
+        ArduinoOTA.setPassword(apiKey.c_str());
+        Serial.println("OTA: using api_key from NVS as ArduinoOTA password");
+    } else {
+        ArduinoOTA.setPassword(OTA_PASSWORD);
+        Serial.println("OTA: using OTA_PASSWORD macro as ArduinoOTA password");
+    }
     ArduinoOTA.onStart([]() { Serial.println("OTA: Start updating sketch"); });
     ArduinoOTA.onEnd([]() { Serial.println("OTA: End"); });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {

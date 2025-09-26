@@ -96,11 +96,18 @@ void handleConfig() {
         }
 
         // Example: Update HTTP_NOTIFICATION_URL (requires a non-macro variable)
-        // For now, just acknowledge receipt
+        // Persist api_key into NVS so the /update OTA endpoint can validate uploads.
         if (doc["http_notification_url"].is<String>()) {
             Serial.print("New HTTP Notification URL: ");
             Serial.println(doc["http_notification_url"].as<String>());
             // saveConfig(); // Call save config after updating variables
+        }
+        if (doc["api_key"].is<String>()) {
+            String newKey = doc["api_key"].as<String>();
+            Preferences p; p.begin(PREF_NAMESPACE, false);
+            p.putString("api_key", newKey);
+            p.end();
+            Serial.println("API key saved to NVS (config/api_key)");
         }
 
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Config received\"}");
@@ -280,6 +287,10 @@ void setupWebServer(int port /*= 80*/) {
         syncNtp(isRtcPresent());
         sendCorsJson(200, "application/json", "{\"status\":\"ok\", \"message\":\"NTP sync triggered\"}");
     });
+    // Expose a generic config endpoint to GET/POST small config (persisted to NVS)
+    server->on("/config", HTTP_ANY, []() {
+        handleConfig();
+    });
     server->on("/time/status", HTTP_GET, []() {
     JsonDocDyn doc(1024);
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
@@ -395,6 +406,64 @@ void setupWebServer(int port /*= 80*/) {
         String out;
         serializeJson(outDoc, out);
         sendCorsJson(200, "application/json", out);
+    });
+    // Secure OTA update endpoint (multipart/form-data upload)
+    server->on("/update", HTTP_POST, []() {
+        // After upload completes, restart if update succeeded
+        sendCorsJson(200, "application/json", "{\"status\":\"ok\",\"message\":\"Update received (will reboot if successful)\"}");
+        delay(100);
+        if (Update.isFinished()) {
+            ESP.restart();
+        }
+    }, []() {
+        // upload handler called repeatedly during file upload
+        // Check API key header on first chunk
+        static bool auth_ok = false;
+        static bool update_begun = false;
+        HTTPUpload& upload = server->upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            auth_ok = false;
+            update_begun = false;
+            // read api key from NVS
+            Preferences p; p.begin(PREF_NAMESPACE, true);
+            String expected = p.getString("api_key", String(""));
+            p.end();
+            String authHeader = server->header("Authorization");
+            String apiHeader = server->header("X-Api-Key");
+            if (authHeader.length() > 0 && authHeader.startsWith("Bearer ")) {
+                String tok = authHeader.substring(7);
+                if (tok == expected) auth_ok = true;
+            }
+            if (!auth_ok && apiHeader.length() > 0 && apiHeader == expected) auth_ok = true;
+
+            if (!auth_ok) {
+                Serial.println("Update aborted: auth failed");
+                return;
+            }
+
+            Serial.printf("Update: start, name: %s\n", upload.filename.c_str());
+            uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+            if (!Update.begin(maxSketchSpace)) {
+                Update.printError(Serial);
+            } else {
+                update_begun = true;
+            }
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            if (!update_begun) return;
+            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (!update_begun) return;
+            if (Update.end(true)) {
+                Serial.printf("Update Success: %u bytes\n", upload.totalSize);
+            } else {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_ABORTED) {
+            Update.end();
+            Serial.println("Update aborted");
+        }
     });
     // RTC read/set endpoints
     server->on("/time/rtc", HTTP_GET, []() {

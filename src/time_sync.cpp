@@ -20,7 +20,7 @@ static bool rtcEnabled = true;
 static bool rtcLostPowerFlag = false;
 
 // NTP Servers Definition (defined once here)
-const char* NTP_SERVERS[] = {"10.10.10.2", "pool.ntp.org", "time.nist.gov", "time.google.com"};
+const char* NTP_SERVERS[] = {"0.id.pool.ntp.org", "time.nist.gov", "time.google.com", "10.10.10.2"};
 
 void syncNtp(bool updateRtcAfter) {
     if (WiFi.status() == WL_CONNECTED) {
