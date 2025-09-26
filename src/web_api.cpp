@@ -30,6 +30,11 @@ WebServer *server = nullptr;
 // Actual port WebServer is bound to (80 for STA, 8080 for AP/portal)
 int webServerPort = 0;
 
+// Track OTA upload outcome between the streaming handler and final HTTP_POST response
+static bool otaLastAuthRejected = false;
+static bool otaLastHadError = false;
+static bool otaLastSucceeded = false;
+
 // Helper: set common CORS headers for responses
 void setCorsHeaders() {
     if (!server) return;
@@ -373,12 +378,18 @@ void setupWebServer(int port /*= 80*/) {
     });
     // Secure OTA update endpoint (multipart/form-data upload)
     server->on("/update", HTTP_POST, []() {
-        // After upload completes, restart if update succeeded
-        sendCorsJson(200, "application/json", "{\"status\":\"ok\",\"message\":\"Update received (will reboot if successful)\"}");
-        delay(100);
-        if (Update.isFinished()) {
+        if (otaLastAuthRejected) {
+            sendCorsJson(401, "application/json", "{\"status\":\"error\",\"message\":\"OTA authentication failed\"}");
+        } else if (otaLastHadError || !otaLastSucceeded) {
+            sendCorsJson(500, "application/json", "{\"status\":\"error\",\"message\":\"OTA update failed\"}");
+        } else {
+            sendCorsJson(200, "application/json", "{\"status\":\"ok\",\"message\":\"Update received (rebooting)\"}");
+            delay(100);
             ESP.restart();
         }
+        otaLastAuthRejected = false;
+        otaLastHadError = false;
+        otaLastSucceeded = false;
     }, []() {
         // upload handler called repeatedly during file upload
         // Check API key header on first chunk
@@ -388,6 +399,9 @@ void setupWebServer(int port /*= 80*/) {
         if (upload.status == UPLOAD_FILE_START) {
             auth_ok = false;
             update_begun = false;
+            otaLastAuthRejected = false;
+            otaLastHadError = false;
+            otaLastSucceeded = false;
             // read api key from NVS
             String expected = loadStringFromNVSns(PREF_NAMESPACE, "api_key", String(""));
             String authHeader = server->header("Authorization");
@@ -400,6 +414,7 @@ void setupWebServer(int port /*= 80*/) {
 
             if (!auth_ok) {
                 Serial.println("Update aborted: auth failed");
+                otaLastAuthRejected = true;
                 return;
             }
 
@@ -407,6 +422,7 @@ void setupWebServer(int port /*= 80*/) {
             uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
             if (!Update.begin(maxSketchSpace)) {
                 Update.printError(Serial);
+                otaLastHadError = true;
             } else {
                 update_begun = true;
             }
@@ -414,17 +430,22 @@ void setupWebServer(int port /*= 80*/) {
             if (!update_begun) return;
             if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
                 Update.printError(Serial);
+                otaLastHadError = true;
             }
         } else if (upload.status == UPLOAD_FILE_END) {
             if (!update_begun) return;
             if (Update.end(true)) {
                 Serial.printf("Update Success: %u bytes\n", upload.totalSize);
+                otaLastSucceeded = true;
             } else {
                 Update.printError(Serial);
+                otaLastHadError = true;
             }
         } else if (upload.status == UPLOAD_FILE_ABORTED) {
             Update.end();
             Serial.println("Update aborted");
+            otaLastHadError = true;
+            update_begun = false;
         }
     });
     // RTC read/set endpoints
@@ -618,41 +639,62 @@ void setupWebServer(int port /*= 80*/) {
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
-        // Build list of targets: map pinNumber -> targetPressure
+        // Build list of targets: map sensor index -> targetPressure
+        JsonDocument resp;
+        JsonArray results = resp["results"].to<JsonArray>();
         std::map<int, float> targets;
+
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
-                int pin = -1;
-                if (!so["pin"].isNull()) pin = so["pin"].as<int>();
-                else if (!so["tag"].isNull()) pin = tagToIndex(so["tag"].as<String>());
-                if (pin >= 0 && !so["target"].isNull()) {
-                    float t = (float)so["target"].as<float>();
-                    targets[pin] = t;
+                int pinIndex = -1;
+                int pinNumber = -1;
+                if (!so["pin"].isNull()) {
+                    pinNumber = so["pin"].as<int>();
+                    pinIndex = findVoltageSensorIndexByPin(pinNumber);
+                } else if (!so["tag"].isNull()) {
+                    pinIndex = tagToIndex(so["tag"].as<String>());
+                    if (pinIndex >= 0) pinNumber = getVoltageSensorPin(pinIndex);
                 }
+
+                if (pinIndex < 0) {
+                    JsonObject r = results.add<JsonObject>();
+                    if (!so["pin"].isNull()) r["pin"] = so["pin"].as<int>();
+                    if (!so["tag"].isNull()) r["tag"] = so["tag"].as<String>();
+                    r["status"] = "error";
+                    r["message"] = "unknown sensor";
+                    continue;
+                }
+                if (so["target"].isNull()) {
+                    JsonObject r = results.add<JsonObject>();
+                    r["pin_index"] = pinIndex;
+                    r["pin"] = pinNumber;
+                    r["status"] = "error";
+                    r["message"] = "missing target";
+                    continue;
+                }
+                float t = so["target"].is<float>() ? so["target"].as<float>() : (float)so["target"].as<int>();
+                targets[pinIndex] = t;
             }
-    } else if (!doc["target"].isNull() && (doc["target"].is<float>() || doc["target"].is<int>())) {
+        } else if (!doc["target"].isNull() && (doc["target"].is<float>() || doc["target"].is<int>())) {
             float t = doc["target"].is<float>() ? doc["target"].as<float>() : (float)doc["target"].as<int>();
             int n = getNumVoltageSensors();
             for (int i = 0; i < n; ++i) {
-                targets[getVoltageSensorPin(i)] = t;
+                targets[i] = t;
             }
         } else {
             sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"No target provided\"}");
             return;
         }
 
-    JsonDocument resp;
-    JsonArray results = resp["results"].to<JsonArray>();
-
         for (auto const& kv : targets) {
-            int pin = kv.first;
+            int pinIndex = kv.first;
             float targetPressure = kv.second;
-            int pinIndex = findVoltageSensorIndexByPin(pin);
-            if (pinIndex < 0) {
+            int pin = getVoltageSensorPin(pinIndex);
+            if (pin < 0) {
                 JsonObject r = results.add<JsonObject>();
-                r["pin"] = pin;
+                r["pin_index"] = pinIndex;
                 r["status"] = "error";
-                r["message"] = "unknown pin";
+                r["message"] = "unknown sensor";
                 continue;
             }
             float smoothed = getSmoothedADC(pinIndex);
@@ -778,44 +820,65 @@ void setupWebServer(int port /*= 80*/) {
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
 
-        // Build list of targets: map pinNumber -> targetPressure
-        std::map<int, float> targets; // pinNumber -> pressure
+        // Build list of targets: map sensor index -> targetPressure
+        JsonDocument resp;
+        JsonArray results = resp["results"].to<JsonArray>();
+        std::map<int, float> targets; // sensorIndex -> pressure
 
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
-                int pin = -1;
-                if (!so["pin"].isNull()) pin = so["pin"].as<int>();
-                else if (!so["tag"].isNull()) pin = tagToIndex(so["tag"].as<String>());
-                if (pin >= 0 && !so["target"].isNull()) {
-                    float t = (float)so["target"].as<float>();
-                    targets[pin] = t;
+                int pinIndex = -1;
+                int pinNumber = -1;
+                if (!so["pin"].isNull()) {
+                    pinNumber = so["pin"].as<int>();
+                    pinIndex = findVoltageSensorIndexByPin(pinNumber);
+                } else if (!so["tag"].isNull()) {
+                    pinIndex = tagToIndex(so["tag"].as<String>());
+                    if (pinIndex >= 0) pinNumber = getVoltageSensorPin(pinIndex);
                 }
+
+                if (pinIndex < 0) {
+                    JsonObject r = results.add<JsonObject>();
+                    if (!so["pin"].isNull()) r["pin"] = so["pin"].as<int>();
+                    if (!so["tag"].isNull()) r["tag"] = so["tag"].as<String>();
+                    r["status"] = "error";
+                    r["message"] = "unknown sensor";
+                    continue;
+                }
+                if (so["target"].isNull()) {
+                    JsonObject r = results.add<JsonObject>();
+                    r["pin_index"] = pinIndex;
+                    r["pin"] = pinNumber;
+                    r["status"] = "error";
+                    r["message"] = "missing target";
+                    continue;
+                }
+
+                float t = so["target"].is<float>() ? so["target"].as<float>() : (float)so["target"].as<int>();
+                targets[pinIndex] = t;
             }
-    } else if (!doc["target"].isNull() && (doc["target"].is<float>() || doc["target"].is<int>())) {
+        } else if (!doc["target"].isNull() && (doc["target"].is<float>() || doc["target"].is<int>())) {
             float t = doc["target"].is<float>() ? doc["target"].as<float>() : (float)doc["target"].as<int>();
             // apply to all ADC sensors
             int n = getNumVoltageSensors();
             for (int i = 0; i < n; ++i) {
-                targets[getVoltageSensorPin(i)] = t;
+                targets[i] = t;
             }
         } else {
             sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"No target provided\"}");
             return;
         }
 
-    JsonDocument resp;
-    JsonArray results = resp["results"].to<JsonArray>();
-
         // For each target, measure current smoothed ADC and save as span
         for (auto const& kv : targets) {
-            int pin = kv.first;
+            int pinIndex = kv.first;
             float targetPressure = kv.second;
-            int pinIndex = findVoltageSensorIndexByPin(pin);
-            if (pinIndex < 0) {
+            int pin = getVoltageSensorPin(pinIndex);
+            if (pin < 0) {
                 JsonObject r = results.add<JsonObject>();
-                r["pin"] = pin;
+                r["pin_index"] = pinIndex;
                 r["status"] = "error";
-                r["message"] = "unknown pin";
+                r["message"] = "unknown sensor";
                 continue;
             }
 
@@ -1345,6 +1408,42 @@ void setupWebServer(int port /*= 80*/) {
     server->on("*", HTTP_OPTIONS, []() {
         setCorsHeaders();
         sendCorsJson(204, "text/plain", "");
+    });
+
+    // Serve Swagger UI static files from SD under /swagger
+    // Expect SD to contain a `docs` folder with `index.html` and `openapi.yaml`.
+    server->on("/swagger", HTTP_GET, []() {
+        // redirect to the index under /swagger/
+        server->sendHeader("Location", "/swagger/", true);
+        sendCorsJson(302, "text/plain", "");
+    });
+
+    server->on("/swagger/", HTTP_GET, []() {
+        // Serve /docs/index.html from SD
+        if (!SD.begin()) {
+            sendCorsJson(404, "text/plain", "SD not available");
+            return;
+        }
+        if (!SD.exists("/docs/index.html")) {
+            sendCorsJson(404, "text/plain", "swagger index not found on SD");
+            return;
+        }
+        File f = SD.open("/docs/index.html", FILE_READ);
+        if (!f) { sendCorsJson(500, "text/plain", "Failed to open file"); return; }
+        setCorsHeaders();
+        server->streamFile(f, "text/html");
+        f.close();
+    });
+
+    // Serve the OpenAPI YAML from SD at /swagger/openapi.yaml
+    server->on("/swagger/openapi.yaml", HTTP_GET, []() {
+        if (!SD.begin()) { sendCorsJson(404, "text/plain", "SD not available"); return; }
+        if (!SD.exists("/docs/openapi.yaml")) { sendCorsJson(404, "text/plain", "openapi.yaml not found on SD"); return; }
+        File f = SD.open("/docs/openapi.yaml", FILE_READ);
+        if (!f) { sendCorsJson(500, "text/plain", "Failed to open openapi.yaml"); return; }
+        setCorsHeaders();
+        server->streamFile(f, "application/x-yaml");
+        f.close();
     });
     server->begin();
     webServerPort = port;
