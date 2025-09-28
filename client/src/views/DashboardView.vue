@@ -9,24 +9,36 @@
       @refresh="refreshData"
     />
 
-    <section class="grid gap-6 lg:grid-cols-3">
+    <section class="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
+      <article class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <Icon icon="mdi:chart-line" class="h-10 w-10 text-emerald-300" />
+            <div>
+              <p class="text-sm uppercase tracking-wide text-slate-400">Analog Inputs</p>
+              <h2 class="text-xl font-semibold text-white">Pressure Trend</h2>
+            </div>
+          </div>
+        </div>
+        <div class="mt-6">
+          <VChart :option="lineOption" autoresize class="h-60" />
+        </div>
+      </article>
+
       <article
-        v-for="card in summaryCards"
-        :key="card.title"
+        v-for="gauge in gaugeCards"
+        :key="gauge.id"
         class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur"
       >
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <Icon :icon="card.icon" class="h-10 w-10" :class="card.iconClass" />
-            <div>
-              <p class="text-sm uppercase tracking-wide text-slate-400">{{ card.subtitle }}</p>
-              <h2 class="text-xl font-semibold text-white">{{ card.title }}</h2>
-            </div>
+          <div>
+            <p class="text-sm uppercase tracking-wide text-slate-400">{{ gauge.subtitle }}</p>
+            <h2 class="text-xl font-semibold text-white">{{ gauge.title }}</h2>
           </div>
-          <span :class="card.badgeClass" class="rounded-full px-3 py-1 text-xs font-semibold">{{ card.badge }}</span>
         </div>
-        <p class="mt-6 text-4xl font-semibold text-white">{{ card.value }}</p>
-        <p class="mt-2 text-sm text-slate-400">{{ card.helpText }}</p>
+        <div class="mt-6 h-60">
+          <VChart :option="gauge.option" autoresize class="h-full" />
+        </div>
       </article>
     </section>
 
@@ -35,7 +47,7 @@
         <header class="mb-4 flex items-center justify-between">
           <div>
             <h2 class="text-lg font-semibold text-white">Pressure Trend</h2>
-            <p class="text-xs uppercase tracking-wide text-slate-400">Last 5 minutes</p>
+            <p class="text-xs uppercase tracking-wide text-slate-400">Last snapshot</p>
           </div>
         </header>
         <VChart :option="lineOption" autoresize class="h-64" />
@@ -43,11 +55,11 @@
       <article class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
         <header class="mb-4 flex items-center justify-between">
           <div>
-            <h2 class="text-lg font-semibold text-white">Average Pressure Gauge</h2>
-            <p class="text-xs uppercase tracking-wide text-slate-400">Combined AI & ADS</p>
+            <h2 class="text-lg font-semibold text-white">Pressure Gauges</h2>
+            <p class="text-xs uppercase tracking-wide text-slate-400">Semua channel analog</p>
           </div>
         </header>
-        <VChart :option="gaugeOption" autoresize class="h-64" />
+        <VChart :option="multiGaugeOption" autoresize class="h-64" />
       </article>
     </section>
 
@@ -139,49 +151,6 @@ const wifiConnected = computed(() => !!systemInfo.value?.connected);
 
 const lastNtpIso = computed(() => timeStatus.value?.last_ntp_iso || systemInfo.value?.last_ntp_iso || null);
 
-const summaryCards = computed(() => {
-  const avg = averagePressureBar.value;
-  const rssi = wifiRssi.value;
-  const connected = wifiConnected.value;
-
-  return [
-    {
-      title: 'Average Pressure',
-      subtitle: 'Analog Inputs',
-      value: avg != null ? `${avg.toFixed(2)} bar` : (loading.value ? '—' : 'No data'),
-      helpText: adcTotal.value
-        ? `Across ${adcTotal.value} AI channels${adsTotal.value ? ` (+${adsTotal.value} ADS)` : ''}.`
-        : 'Awaiting sensor data.',
-      icon: 'mdi:chart-line',
-      iconClass: 'text-emerald-400',
-      badge: `${adcOnline.value}/${adcTotal.value || 0} AI online`,
-      badgeClass: 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
-    },
-    {
-      title: 'Last NTP Sync',
-      subtitle: 'Timekeeping',
-      value: formatRelativeTime(lastNtpIso.value) || (loading.value ? '—' : 'Unknown'),
-      helpText: lastNtpIso.value ? new Date(lastNtpIso.value).toLocaleString() : 'Waiting for time sync.',
-      icon: 'mdi:clock-check',
-      iconClass: 'text-sky-400',
-      badge: timeStatus.value?.rtc_enabled ? 'RTC enabled' : 'RTC disabled',
-      badgeClass: 'border border-sky-500/30 bg-sky-500/10 text-sky-200',
-    },
-    {
-      title: connected ? 'Wi-Fi Signal' : 'Wi-Fi',
-      subtitle: wifiSsid.value || 'Station Mode',
-      value: connected && rssi != null ? `${rssi} dBm` : connected ? 'Connected' : 'Offline',
-      helpText: connected ? `IP ${deviceIp.value || '–'}` : 'Device is not connected to Wi-Fi.',
-      icon: 'mdi:wifi',
-      iconClass: connected ? 'text-fuchsia-400' : 'text-rose-400',
-      badge: connected ? 'Online' : 'Offline',
-      badgeClass: connected
-        ? 'border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
-        : 'border border-rose-500/30 bg-rose-500/10 text-rose-200',
-    },
-  ];
-});
-
 const palette = ['text-sky-400', 'text-indigo-400', 'text-emerald-400', 'text-amber-400'];
 
 const lineOption = computed(() => {
@@ -236,48 +205,55 @@ const lineOption = computed(() => {
   };
 });
 
-const gaugeOption = computed(() => {
-  const value = averagePressureBar.value != null ? Number(averagePressureBar.value.toFixed(2)) : 0;
-  return {
-    series: [
-      {
-        type: 'gauge',
-        startAngle: 210,
-        endAngle: -30,
-        min: 0,
-        max: 10,
-        splitNumber: 5,
-        axisLine: {
-          lineStyle: {
-            width: 12,
-            color: [
-              [0.4, '#0ea5e9'],
-              [0.7, '#38bdf8'],
-              [1, '#f87171'],
-            ],
-          },
-        },
-        pointer: {
-          itemStyle: { color: '#e2e8f0' },
-        },
-        axisLabel: {
-          color: '#94a3b8',
-          distance: 20,
-        },
-        detail: {
-          valueAnimation: true,
-          fontSize: 28,
-          formatter: '{value} bar',
-          color: '#e2e8f0',
-        },
-        data: [
+const gaugeCards = computed(() => {
+  const sensors = (readings.value?.tags || []).filter((tag) => tag.source === 'adc');
+  return sensors.map((sensor) => {
+    const value = sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0;
+    return {
+      id: sensor.id,
+      title: sensor.id,
+      subtitle: 'Tekanan',
+      option: {
+        series: [
           {
-            value,
+            type: 'gauge',
+            startAngle: 210,
+            endAngle: -30,
+            min: 0,
+            max: 10,
+            radius: '90%',
+            axisLine: {
+              lineStyle: {
+                width: 10,
+                color: [
+                  [0.4, '#0ea5e9'],
+                  [0.7, '#38bdf8'],
+                  [1, '#f87171'],
+                ],
+              },
+            },
+            axisLabel: {
+              color: '#94a3b8',
+            },
+            pointer: {
+              itemStyle: { color: '#e2e8f0' },
+            },
+            detail: {
+              fontSize: 24,
+              valueAnimation: true,
+              formatter: `${value.toFixed(1)} bar`,
+              color: '#e2e8f0',
+            },
+            title: {
+              offsetCenter: [0, '70%'],
+              color: '#94a3b8',
+            },
+            data: [{ value, name: sensor.id }],
           },
         ],
       },
-    ],
-  };
+    };
+  });
 });
 
 const adcPanels = computed(() => {

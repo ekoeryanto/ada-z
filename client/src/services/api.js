@@ -60,3 +60,15 @@ export function fetchTimeStatus() {
 export function fetchPendingNotifications() {
   return request('/sd/pending_notifications');
 }
+
+export function fetchTagMetadata() {
+  return request('/tags');
+}
+
+export function saveTagMetadata(data) {
+  return request('/tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
