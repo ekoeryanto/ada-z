@@ -320,6 +320,6 @@ void loop() {
     // Service web server
     // Service OTA and web server
     serviceWifiManager();
-    handleOtaUpdate();
-    handleWebServerClients();
+    handleOtaUpdate(); // This handles ArduinoOTA, which is separate
+    // handleWebServerClients() is no longer needed with ESPAsyncWebServer
 }
