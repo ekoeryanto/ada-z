@@ -10,21 +10,6 @@
     />
 
     <section class="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
-      <article class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <Icon icon="mdi:chart-line" class="h-10 w-10 text-emerald-300" />
-            <div>
-              <p class="text-sm uppercase tracking-wide text-slate-400">Analog Inputs</p>
-              <h2 class="text-xl font-semibold text-white">Pressure Trend</h2>
-            </div>
-          </div>
-        </div>
-        <div class="mt-6">
-          <VChart :option="lineOption" autoresize class="h-60" />
-        </div>
-      </article>
-
       <article
         v-for="gauge in gaugeCards"
         :key="gauge.id"
@@ -39,29 +24,13 @@
         <div class="mt-6 h-60">
           <VChart :option="gauge.option" autoresize class="h-full" />
         </div>
+        <div class="mt-4 h-20">
+          <VChart :option="getSparklineOption(gauge.id)" autoresize class="h-full" />
+        </div>
       </article>
     </section>
 
-    <section class="grid gap-6 lg:grid-cols-2">
-      <article class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-        <header class="mb-4 flex items-center justify-between">
-          <div>
-            <h2 class="text-lg font-semibold text-white">Pressure Trend</h2>
-            <p class="text-xs uppercase tracking-wide text-slate-400">Last snapshot</p>
-          </div>
-        </header>
-        <VChart :option="lineOption" autoresize class="h-64" />
-      </article>
-      <article class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-        <header class="mb-4 flex items-center justify-between">
-          <div>
-            <h2 class="text-lg font-semibold text-white">Pressure Gauges</h2>
-            <p class="text-xs uppercase tracking-wide text-slate-400">Semua channel analog</p>
-          </div>
-        </header>
-        <VChart :option="multiGaugeOption" autoresize class="h-64" />
-      </article>
-    </section>
+   
 
     <DashboardPanels
       title="Analog Inputs (0–10 V)"
@@ -206,13 +175,17 @@ const lineOption = computed(() => {
 });
 
 const gaugeCards = computed(() => {
-  const sensors = (readings.value?.tags || []).filter((tag) => tag.source === 'adc');
+  // Include both ADC and ADS sensors so ADS channels also get gauge cards
+  const sensors = (readings.value?.tags || []).filter((tag) => tag.source === 'adc' || tag.source === 'ads1115');
   return sensors.map((sensor) => {
-    const value = sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0;
+    const isAds = sensor.source === 'ads1115';
+    const value = isAds
+      ? sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0
+      : sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0;
     return {
       id: sensor.id,
       title: sensor.id,
-      subtitle: 'Tekanan',
+      subtitle: isAds ? 'Current Loop (mA->bar)' : 'Tekanan',
       option: {
         series: [
           {
@@ -255,6 +228,36 @@ const gaugeCards = computed(() => {
     };
   });
 });
+
+// Small history buffer to hold last N samples per gauge for sparklines
+const historySize = 40;
+const gaugeHistory = new Map(); // id -> Array<number>
+
+function pushGaugeSample(id, value) {
+  if (!gaugeHistory.has(id)) gaugeHistory.set(id, []);
+  const buf = gaugeHistory.get(id);
+  buf.push(Number(value || 0));
+  if (buf.length > historySize) buf.shift();
+}
+
+function getSparklineOption(id) {
+  const data = (gaugeHistory.get(id) || []).slice();
+  return {
+    grid: { left: 4, right: 4, top: 6, bottom: 6 },
+    xAxis: { show: false, type: 'category', data: data.map((_, i) => i) },
+    yAxis: { show: false, type: 'value' },
+    series: [
+      {
+        type: 'line',
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { color: '#60a5fa', width: 2 },
+        areaStyle: { color: 'rgba(96,165,250,0.12)' },
+        data: data,
+      },
+    ],
+  };
+}
 
 const adcPanels = computed(() => {
   const sensorReadings = (readings.value?.tags || []).filter((tag) => tag.source === 'adc');
@@ -362,12 +365,24 @@ async function refreshData() {
     config.value = cfg;
     readings.value = sensors;
     timeStatus.value = time;
+      // update per-gauge histories so sparkline shows newest point
+      updateGaugeHistories();
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     refreshing.value = false;
     loading.value = false;
   }
+}
+
+// After each refresh, update gauge histories for sparklines
+function updateGaugeHistories() {
+  const sensors = (readings.value?.tags || []).filter((t) => t.source === 'adc' || t.source === 'ads1115');
+  sensors.forEach((s) => {
+    // For ADS, prefer converted.filtered (pressure derived from smoothed voltage)
+    const val = s.value?.converted?.filtered ?? s.value?.converted?.value ?? s.value?.scaled?.filtered ?? s.value?.scaled?.value ?? 0;
+    pushGaugeSample(s.id, val);
+  });
 }
 
 async function handleSync() {

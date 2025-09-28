@@ -25,6 +25,7 @@
 #include <map>
 #include <vector>
 #include <math.h>
+#include <pgmspace.h>
 
 // ArduinoJson usage updated to recommended APIs
 
@@ -35,6 +36,259 @@ int webServerPort = 0;
 
 // SD availability flag: initialize once at startup to avoid repeated SD.begin() calls
 static bool sdReady = false;
+
+static const char* TAG_METADATA_PATH = "/tags.json";
+static const char DEFAULT_TAG_METADATA[] PROGMEM = R"JSON({
+  "version": 1,
+  "generated_at": "firmware-default",
+  "groups": [
+    {
+      "id": "ai_voltage",
+      "title": "Analog Input 0-10 V",
+      "subtitle": "AI1 - AI3",
+      "icon": "mdi:water",
+      "iconColor": "text-sky-400",
+      "tags": [
+        {
+          "id": "AI1",
+          "label": "Reservoir Utara",
+          "type": "analog_voltage",
+          "direction": "input",
+          "pin": "GPIO 35",
+          "pin_label": "GPIO 35",
+          "range": "0-10 V (0-10 bar)",
+          "location": "Reservoir utama",
+          "notes": "Tekanan reservoir utama, kalibrasi linier"
+        },
+        {
+          "id": "AI2",
+          "label": "Reservoir Selatan",
+          "type": "analog_voltage",
+          "direction": "input",
+          "pin": "GPIO 34",
+          "pin_label": "GPIO 34",
+          "range": "0-10 V (0-10 bar)",
+          "location": "Reservoir sekunder",
+          "notes": "Tekanan reservoir sekunder"
+        },
+        {
+          "id": "AI3",
+          "label": "Booster Pump",
+          "type": "analog_voltage",
+          "direction": "input",
+          "pin": "GPIO 36",
+          "pin_label": "GPIO 36",
+          "range": "0-10 V (0-10 bar)",
+          "location": "Booster / cadangan",
+          "notes": "Cadangan untuk pompa booster"
+        }
+      ]
+    },
+    {
+      "id": "ads_current",
+      "title": "Analog Current 4-20 mA",
+      "subtitle": "ADS_A0 - ADS_A1",
+      "icon": "mdi:current-dc",
+      "iconColor": "text-amber-400",
+      "tags": [
+        {
+          "id": "ADS_A0",
+          "label": "Loop Level 1",
+          "type": "analog_current",
+          "direction": "input",
+          "pin": "ADS1115 CH0",
+          "pin_label": "ADS1115 CH0",
+          "range": "4-20 mA (0-10 bar)",
+          "location": "Kolom air",
+          "notes": "Lewat TP5551"
+        },
+        {
+          "id": "ADS_A1",
+          "label": "Loop Level 2",
+          "type": "analog_current",
+          "direction": "input",
+          "pin": "ADS1115 CH1",
+          "pin_label": "ADS1115 CH1",
+          "range": "4-20 mA (0-10 bar)",
+          "location": "Cadangan",
+          "notes": "Lewat TP5551"
+        }
+      ]
+    },
+    {
+      "id": "digital_inputs",
+      "title": "Digital Input",
+      "subtitle": "DI1 - DI4",
+      "icon": "mdi:flash",
+      "iconColor": "text-emerald-400",
+      "tags": [
+        {
+          "id": "DI1",
+          "label": "Flow Switch 1",
+          "type": "digital_input",
+          "direction": "input",
+          "pin": "GPIO 27",
+          "pin_label": "GPIO 27",
+          "range": "3.3-24 V",
+          "notes": "Status flow switch / level R1"
+        },
+        {
+          "id": "DI2",
+          "label": "Flow Switch 2",
+          "type": "digital_input",
+          "direction": "input",
+          "pin": "GPIO 26",
+          "pin_label": "GPIO 26",
+          "range": "3.3-24 V",
+          "notes": "Status flow switch / level R2"
+        },
+        {
+          "id": "DI3",
+          "label": "Door Sensor",
+          "type": "digital_input",
+          "direction": "input",
+          "pin": "GPIO 25",
+          "pin_label": "GPIO 25",
+          "range": "3.3-24 V",
+          "notes": "Sensor pintu panel"
+        },
+        {
+          "id": "DI4",
+          "label": "Digital Cadangan",
+          "type": "digital_input",
+          "direction": "input",
+          "pin": "GPIO 33",
+          "pin_label": "GPIO 33",
+          "range": "3.3-24 V",
+          "notes": "Cadangan untuk input lain"
+        }
+      ]
+    },
+    {
+      "id": "digital_outputs",
+      "title": "Digital Output",
+      "subtitle": "DO1 - DO4",
+      "icon": "mdi:toggle-switch",
+      "iconColor": "text-fuchsia-400",
+      "tags": [
+        {
+          "id": "DO1",
+          "label": "Relay Pompa 1",
+          "type": "digital_output",
+          "direction": "output",
+          "pin": "GPIO 15",
+          "pin_label": "GPIO 15",
+          "range": "3.3 V",
+          "notes": "Relay pompa utama / valve"
+        },
+        {
+          "id": "DO2",
+          "label": "Relay Pompa 2",
+          "type": "digital_output",
+          "direction": "output",
+          "pin": "GPIO 13",
+          "pin_label": "GPIO 13",
+          "range": "3.3 V",
+          "notes": "Relay pompa cadangan"
+        },
+        {
+          "id": "DO3",
+          "label": "Alarm Sirene",
+          "type": "digital_output",
+          "direction": "output",
+          "pin": "GPIO 12",
+          "pin_label": "GPIO 12",
+          "range": "3.3 V",
+          "notes": "Sirene atau lampu peringatan"
+        },
+        {
+          "id": "DO4",
+          "label": "Output Cadangan",
+          "type": "digital_output",
+          "direction": "output",
+          "pin": "GPIO 14",
+          "pin_label": "GPIO 14",
+          "range": "3.3 V",
+          "notes": "Cadangan untuk output lain"
+        }
+      ]
+    },
+    {
+      "id": "interfaces",
+      "title": "Komunikasi & Antarmuka",
+      "subtitle": "Bus & Storage",
+      "icon": "mdi:access-point-network",
+      "iconColor": "text-indigo-400",
+      "tags": [
+        {
+          "id": "RS485",
+          "label": "Modbus RTU",
+          "type": "bus",
+          "direction": "bidirectional",
+          "pin": "RX16 / TX17 / DE4",
+          "pin_label": "RX16 / TX17 / DE4",
+          "notes": "Komunikasi RS485 half-duplex"
+        },
+        {
+          "id": "I2C",
+          "label": "I2C Bus",
+          "type": "bus",
+          "direction": "bidirectional",
+          "pin": "SDA21 / SCL22",
+          "pin_label": "SDA21 / SCL22",
+          "notes": "RTC DS3231 dan ADS1115"
+        },
+        {
+          "id": "SD",
+          "label": "Penyimpanan SD",
+          "type": "storage",
+          "direction": "bidirectional",
+          "pin": "CS5 / MOSI23 / MISO19 / SCK18",
+          "pin_label": "CS5 / MOSI23 / MISO19 / SCK18",
+          "notes": "Logging dan aset statis web"
+        }
+      ]
+    }
+  ]
+})JSON";
+
+static String loadTagMetadataJson() {
+    if (sdReady && SD.exists(TAG_METADATA_PATH)) {
+        File f = SD.open(TAG_METADATA_PATH, FILE_READ);
+        if (f) {
+            String payload;
+            payload.reserve(f.size());
+            while (f.available()) {
+                payload += static_cast<char>(f.read());
+            }
+            f.close();
+            if (payload.length() > 0) {
+                return payload;
+            }
+        }
+    }
+    return String(FPSTR(DEFAULT_TAG_METADATA));
+}
+
+static bool saveTagMetadataJson(const String &payload) {
+    if (!sdReady) return false;
+    DynamicJsonDocument doc(16384);
+    DeserializationError err = deserializeJson(doc, payload);
+    if (err) {
+        return false;
+    }
+    if (!doc["groups"].is<JsonArray>()) {
+        return false;
+    }
+    if (SD.exists(TAG_METADATA_PATH)) {
+        SD.remove(TAG_METADATA_PATH);
+    }
+    File f = SD.open(TAG_METADATA_PATH, FILE_WRITE);
+    if (!f) return false;
+    size_t written = f.print(payload);
+    f.close();
+    return written == payload.length();
+}
 
 static const char* contentTypeFromPath(const String &path) {
     if (path.endsWith(".html")) return "text/html";
@@ -670,6 +924,32 @@ void setupWebServer(int port /*= 80*/) {
         String resp;
         serializeJson(doc, resp);
         sendCorsJson(200, "application/json", resp);
+    });
+
+    server->on("/api/tags", HTTP_GET, []() {
+        String payload = loadTagMetadataJson();
+        sendCorsJson(200, "application/json", payload);
+    });
+
+    server->on("/api/tags", HTTP_POST, []() {
+        if (!sdReady) {
+            sendCorsJson(503, "application/json", "{\"status\":\"error\",\"message\":\"SD card not ready\"}");
+            return;
+        }
+        if (!server->hasArg("plain")) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}");
+            return;
+        }
+        String body = server->arg("plain");
+        if (body.length() == 0) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Empty payload\"}");
+            return;
+        }
+        if (!saveTagMetadataJson(body)) {
+            sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid tag metadata\"}");
+            return;
+        }
+        sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"Tag metadata saved\"}");
     });
 
     server->on("/api/diagnostics/network", HTTP_GET, []() {
