@@ -23,6 +23,8 @@
 #include <esp_heap_caps.h>
 #include <ESPmDNS.h>
 #include <map>
+#include <vector>
+#include <math.h>
 
 // ArduinoJson usage updated to recommended APIs
 
@@ -132,55 +134,275 @@ void loadConfig() {
     #endif
 }
 
+static const size_t CONFIG_DOC_CAP = 8192;
+
+static int tagToIndex(const String &tag);
+
+static void populateUnifiedConfig(JsonDocument &doc) {
+    doc.clear();
+
+    float dividerMv = loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+    if (dividerMv <= 0.0f) dividerMv = 3300.0f;
+
+    JsonObject timeObj = doc["time"].to<JsonObject>();
+    timeObj["timezone"] = getTimezone();
+    JsonArray ntpArr = timeObj["ntp_servers"].to<JsonArray>();
+    for (const String &serverName : getConfiguredNtpServers()) {
+        ntpArr.add(serverName);
+    }
+    timeObj["sync_interval_ms"] = getNtpSyncInterval();
+    timeObj["retry_interval_ms"] = getNtpRetryInterval();
+    timeObj["rtc_enabled"] = getRtcEnabled() ? 1 : 0;
+    timeObj["rtc_present"] = isRtcPresent() ? 1 : 0;
+    timeObj["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
+    timeObj["last_ntp_iso"] = getLastNtpSuccessIso();
+    timeObj["pending_rtc_sync"] = isPendingRtcSync() ? 1 : 0;
+
+    JsonObject sdObj = doc["sd"].to<JsonObject>();
+    sdObj["enabled"] = getSdEnabled() ? 1 : 0;
+
+    JsonObject notifObj = doc["notifications"].to<JsonObject>();
+    int storedMode = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
+    int storedPayload = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);
+    notifObj["mode"] = storedMode;
+    notifObj["payload_type"] = storedPayload;
+    notifObj["webhook_url"] = String(HTTP_NOTIFICATION_URL);
+
+    JsonObject adcObj = doc["adc"].to<JsonObject>();
+    adcObj["num_samples"] = getAdcNumSamples();
+    adcObj["divider_mv"] = roundToDecimals(dividerMv, 2);
+    adcObj["ema_alpha"] = EMA_ALPHA;
+
+    JsonObject sensorsObj = doc["sensors"].to<JsonObject>();
+    int sensorCount = getNumVoltageSensors();
+    sensorsObj["count"] = sensorCount;
+    sensorsObj["read_interval_ms"] = SENSOR_READ_INTERVAL;
+    sensorsObj["default_notification_interval_ms"] = DEFAULT_SENSOR_NOTIFICATION_INTERVAL;
+
+    JsonArray tags = doc["tags"].to<JsonArray>();
+    for (int i = 0; i < sensorCount; ++i) {
+        String tagId = String("AI") + String(i + 1);
+        JsonObject tag = tags.add<JsonObject>();
+        tag["id"] = tagId;
+        tag["index"] = i;
+        tag["pin"] = getVoltageSensorPin(i);
+        tag["type"] = "analog_input";
+        tag["unit"] = "bar";
+        tag["source"] = "adc";
+        tag["enabled"] = getSensorEnabled(i) ? 1 : 0;
+        tag["notification_interval_ms"] = getSensorNotificationInterval(i);
+        tag["divider_mv"] = roundToDecimals(dividerMv, 2);
+
+        struct SensorCalibration cal = getCalibrationForPin(i);
+        JsonObject calObj = tag["calibration"].to<JsonObject>();
+        calObj["zero_raw_adc"] = roundToDecimals(cal.zeroRawAdc, 3);
+        calObj["span_raw_adc"] = roundToDecimals(cal.spanRawAdc, 3);
+        calObj["zero_pressure_value"] = roundToDecimals(cal.zeroPressureValue, 4);
+        calObj["span_pressure_value"] = roundToDecimals(cal.spanPressureValue, 4);
+        calObj["scale"] = roundToDecimals(cal.scale, 6);
+        calObj["offset"] = roundToDecimals(cal.offset, 6);
+
+        JsonObject scaling = tag["scaling"].to<JsonObject>();
+        scaling["scale"] = roundToDecimals(cal.scale, 6);
+        scaling["offset"] = roundToDecimals(cal.offset, 6);
+        scaling["input_unit"] = "raw_adc";
+        scaling["output_unit"] = "bar";
+
+        JsonObject runtime = tag["runtime"].to<JsonObject>();
+        runtime["raw_smoothed"] = roundToDecimals(getSmoothedADC(i), 3);
+        runtime["converted"] = roundToDecimals(getSmoothedVoltagePressure(i), 3);
+        runtime["converted_unit"] = "bar";
+        runtime["saturated"] = isPinSaturated(i) ? 1 : 0;
+    }
+}
+
 void handleConfig() {
-    if (server->method() == HTTP_POST) {
+    setCorsHeaders();
+
+    if (!server) {
+        sendCorsJson(500, "application/json", "{\"status\":\"error\",\"message\":\"Server not initialised\"}");
+        return;
+    }
+
+    HTTPMethod method = server->method();
+
+    if (method == HTTP_GET) {
+        DynamicJsonDocument doc(CONFIG_DOC_CAP);
+        populateUnifiedConfig(doc);
+        String response;
+        serializeJson(doc, response);
+        sendCorsJson(200, "application/json", response);
+        return;
+    }
+
+    if (method == HTTP_POST || method == HTTP_PUT || method == HTTP_PATCH) {
         if (!server->hasArg("plain")) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing JSON body\"}");
             return;
         }
 
         String body = server->arg("plain");
-        #if ENABLE_VERBOSE_LOGS
-        Serial.print("Received config POST: ");
-        Serial.println(body);
-        #endif
-
-                JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, body);
-
-        if (error) {
-            Serial.print(F("deserializeJson() failed: "));
-            Serial.println(error.f_str());
+        DynamicJsonDocument incoming(CONFIG_DOC_CAP);
+        DeserializationError err = deserializeJson(incoming, body);
+        if (err) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
             return;
         }
 
-        // Example: Update HTTP_NOTIFICATION_URL (requires a non-macro variable)
-        // Persist api_key into NVS so the /update OTA endpoint can validate uploads.
-        if (doc["http_notification_url"].is<String>()) {
-            #if ENABLE_VERBOSE_LOGS
-            Serial.print("New HTTP Notification URL: ");
-            Serial.println(doc["http_notification_url"].as<String>());
-            #endif
-            // saveConfig(); // Call save config after updating variables
-        }
-        if (doc["api_key"].is<String>()) {
-            String newKey = doc["api_key"].as<String>();
-            saveStringToNVSns(PREF_NAMESPACE, "api_key", newKey);
-            Serial.println("API key saved to NVS (config/api_key)");
+        bool sensorSettingsChanged = false;
+
+        if (incoming["time"].is<JsonObject>()) {
+            JsonObject timeObj = incoming["time"].as<JsonObject>();
+            if (timeObj["timezone"].is<const char*>()) {
+                setTimezone(String(timeObj["timezone"].as<const char*>()));
+            }
+            if (timeObj["ntp_servers"].is<JsonArray>()) {
+                std::vector<String> servers;
+                for (JsonVariant v : timeObj["ntp_servers"].as<JsonArray>()) {
+                    if (v.is<const char*>()) {
+                        String entry = String(v.as<const char*>());
+                        entry.trim();
+                        if (entry.length() > 0) {
+                            servers.push_back(entry);
+                        }
+                    }
+                }
+                setConfiguredNtpServers(servers);
+            }
+            if (!timeObj["sync_interval_ms"].isNull()) {
+                setNtpSyncInterval(timeObj["sync_interval_ms"].as<unsigned long>());
+            }
+            if (!timeObj["retry_interval_ms"].isNull()) {
+                setNtpRetryInterval(timeObj["retry_interval_ms"].as<unsigned long>());
+            }
+            if (!timeObj["rtc_enabled"].isNull()) {
+                bool enabled = timeObj["rtc_enabled"].is<bool>() ? timeObj["rtc_enabled"].as<bool>() : (timeObj["rtc_enabled"].as<int>() != 0);
+                setRtcEnabled(enabled);
+            }
         }
 
-        sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Config received\"}");
-    } else {
-        // Handle GET request for current config
-            JsonDocument doc;
-        // doc["http_notification_url"] = HTTP_NOTIFICATION_URL; // Example: Send current URL
-        // Add other config parameters to send
+        if (incoming["sd"].is<JsonObject>()) {
+            JsonObject sdObj = incoming["sd"].as<JsonObject>();
+            if (!sdObj["enabled"].isNull()) {
+                bool enabled = sdObj["enabled"].is<bool>() ? sdObj["enabled"].as<bool>() : (sdObj["enabled"].as<int>() != 0);
+                setSdEnabled(enabled);
+            }
+        }
 
+        if (incoming["notifications"].is<JsonObject>()) {
+            JsonObject notifObj = incoming["notifications"].as<JsonObject>();
+            if (!notifObj["mode"].isNull()) {
+                int mode = notifObj["mode"].as<int>();
+                saveIntToNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, mode);
+                setNotificationMode((uint8_t)mode);
+            }
+            if (!notifObj["payload_type"].isNull()) {
+                int payload = notifObj["payload_type"].as<int>();
+                saveIntToNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, payload);
+                setNotificationPayloadType((uint8_t)payload);
+            }
+        }
+
+        if (incoming["adc"].is<JsonObject>()) {
+            JsonObject adcObj = incoming["adc"].as<JsonObject>();
+            if (!adcObj["divider_mv"].isNull()) {
+                float mv = adcObj["divider_mv"].as<float>();
+                if (mv > 0.0f) {
+                    saveFloatToNVSns("adc_cfg", "divider_mv", mv);
+                }
+            }
+            if (!adcObj["num_samples"].isNull()) {
+                setAdcNumSamples(adcObj["num_samples"].as<int>());
+            }
+        }
+
+        if (incoming["tags"].is<JsonArray>()) {
+            for (JsonVariant v : incoming["tags"].as<JsonArray>()) {
+                if (!v.is<JsonObject>()) continue;
+                JsonObject tagObj = v.as<JsonObject>();
+                if (!tagObj["id"].is<const char*>()) continue;
+                int idx = tagToIndex(String(tagObj["id"].as<const char*>()));
+                if (idx < 0) continue;
+
+                if (!tagObj["enabled"].isNull()) {
+                    bool enabled = tagObj["enabled"].is<bool>() ? tagObj["enabled"].as<bool>() : (tagObj["enabled"].as<int>() != 0);
+                    setSensorEnabled(idx, enabled);
+                    sensorSettingsChanged = true;
+                }
+                if (!tagObj["notification_interval_ms"].isNull()) {
+                    setSensorNotificationInterval(idx, tagObj["notification_interval_ms"].as<unsigned long>());
+                    sensorSettingsChanged = true;
+                }
+
+                bool calibrationTouched = false;
+                struct SensorCalibration cal = getCalibrationForPin(idx);
+                float zeroRaw = cal.zeroRawAdc;
+                float spanRaw = cal.spanRawAdc;
+                float zeroVal = cal.zeroPressureValue;
+                float spanVal = cal.spanPressureValue;
+
+                if (tagObj["calibration"].is<JsonObject>()) {
+                    JsonObject calObj = tagObj["calibration"].as<JsonObject>();
+                    if (!calObj["zero_raw_adc"].isNull()) {
+                        zeroRaw = calObj["zero_raw_adc"].as<float>();
+                        calibrationTouched = true;
+                    }
+                    if (!calObj["span_raw_adc"].isNull()) {
+                        spanRaw = calObj["span_raw_adc"].as<float>();
+                        calibrationTouched = true;
+                    }
+                    if (!calObj["zero_pressure_value"].isNull()) {
+                        zeroVal = calObj["zero_pressure_value"].as<float>();
+                        calibrationTouched = true;
+                    }
+                    if (!calObj["span_pressure_value"].isNull()) {
+                        spanVal = calObj["span_pressure_value"].as<float>();
+                        calibrationTouched = true;
+                    }
+                }
+
+                bool scaleOverride = false;
+                float overrideScale = cal.scale;
+                float overrideOffset = cal.offset;
+
+                if (!tagObj["scale"].isNull()) {
+                    overrideScale = tagObj["scale"].as<float>();
+                    scaleOverride = true;
+                    calibrationTouched = true;
+                }
+                if (!tagObj["offset"].isNull()) {
+                    overrideOffset = tagObj["offset"].as<float>();
+                    scaleOverride = true;
+                    calibrationTouched = true;
+                }
+
+                if (scaleOverride) {
+                    zeroVal = (zeroRaw * overrideScale) + overrideOffset;
+                    spanVal = (spanRaw * overrideScale) + overrideOffset;
+                }
+
+                if (calibrationTouched) {
+                    if (fabsf(spanRaw - zeroRaw) < 0.0001f) {
+                        spanRaw = zeroRaw + 1.0f;
+                    }
+                    saveCalibrationForPin(idx, zeroRaw, spanRaw, zeroVal, spanVal);
+                }
+            }
+        }
+
+        if (sensorSettingsChanged) {
+            persistSensorSettings();
+        }
+
+        DynamicJsonDocument responseDoc(CONFIG_DOC_CAP);
+        populateUnifiedConfig(responseDoc);
         String response;
-        serializeJson(doc, response);
+        serializeJson(responseDoc, response);
         sendCorsJson(200, "application/json", response);
+        return;
     }
+
+    sendCorsJson(405, "application/json", "{\"status\":\"error\",\"message\":\"Method not allowed\"}");
 }
 
 void loadCalibration() {

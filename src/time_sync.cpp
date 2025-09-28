@@ -5,6 +5,8 @@
 #include <sys/time.h>
 #include <esp_sntp.h>
 #include <cstring>
+#include <ArduinoJson.h>
+#include <vector>
 #include "storage_helpers.h"
 #include "sd_logger.h"
 
@@ -28,8 +30,83 @@ static String cachedLastNtpIso;
 static const char* PREF_TIME_NS = "time";
 static const char* PREF_LAST_NTP_EPOCH = "last_ntp";
 static const char* PREF_LAST_NTP_ISO = "last_ntp_iso";
+static const char* PREF_TIMEZONE = "tz";
+static const char* PREF_NTP_SERVERS_JSON = "ntp_servers";
+static const char* PREF_NTP_SYNC_MS = "ntp_sync_ms";
+static const char* PREF_NTP_RETRY_MS = "ntp_retry_ms";
 
 static const long MAX_RTC_DRIFT_SECONDS = 2;
+
+static String currentTimezone = String(TIMEZONE);
+static bool timezoneLoaded = false;
+static std::vector<String> configuredNtpServers;
+static bool ntpServersLoaded = false;
+static unsigned long ntpSyncIntervalMs = NTP_SYNC_INTERVAL;
+static unsigned long ntpRetryIntervalMs = NTP_RETRY_INTERVAL;
+static bool intervalsLoaded = false;
+
+static void applyTimezoneEnv(const String &tz) {
+    if (tz.length() == 0) return;
+    setenv("TZ", tz.c_str(), 1);
+    tzset();
+}
+
+static void ensureTimezoneLoaded() {
+    if (timezoneLoaded) return;
+    String stored = loadStringFromNVSns(PREF_TIME_NS, PREF_TIMEZONE, String(""));
+    if (stored.length() > 0) {
+        currentTimezone = stored;
+    } else {
+        currentTimezone = String(TIMEZONE);
+    }
+    timezoneLoaded = true;
+}
+
+static void ensureIntervalsLoaded() {
+    if (intervalsLoaded) return;
+    unsigned long syncMs = loadULongFromNVSns(PREF_TIME_NS, PREF_NTP_SYNC_MS, (unsigned long)NTP_SYNC_INTERVAL);
+    unsigned long retryMs = loadULongFromNVSns(PREF_TIME_NS, PREF_NTP_RETRY_MS, (unsigned long)NTP_RETRY_INTERVAL);
+    if (syncMs < 60000UL) syncMs = NTP_SYNC_INTERVAL;
+    if (retryMs < 1000UL) retryMs = NTP_RETRY_INTERVAL;
+    ntpSyncIntervalMs = syncMs;
+    ntpRetryIntervalMs = retryMs;
+    intervalsLoaded = true;
+}
+
+static void ensureNtpServersLoaded() {
+    if (ntpServersLoaded) return;
+    configuredNtpServers.clear();
+    String raw = loadStringFromNVSns(PREF_TIME_NS, PREF_NTP_SERVERS_JSON, String(""));
+    if (raw.length() > 0) {
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, raw) == DeserializationError::Ok && doc.is<JsonArray>()) {
+            for (JsonVariant v : doc.as<JsonArray>()) {
+                if (v.is<const char*>()) {
+                    String entry = String(v.as<const char*>());
+                    entry.trim();
+                    if (entry.length() > 0) configuredNtpServers.push_back(entry);
+                }
+            }
+        }
+    }
+    if (configuredNtpServers.empty()) {
+        for (size_t i = 0; i < NTP_SERVER_COUNT; ++i) {
+            configuredNtpServers.push_back(String(NTP_SERVERS[i]));
+        }
+    }
+    ntpServersLoaded = true;
+}
+
+static void persistNtpServers() {
+    DynamicJsonDocument doc(512);
+    JsonArray arr = doc.to<JsonArray>();
+    for (const String &s : configuredNtpServers) {
+        arr.add(s);
+    }
+    String json;
+    serializeJson(doc, json);
+    saveStringToNVSns(PREF_TIME_NS, PREF_NTP_SERVERS_JSON, json);
+}
 
 static bool epochPlausible(time_t epoch) {
     if (epoch <= 0) return false;
@@ -83,8 +160,10 @@ static void configureSntp() {
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
     sntp_set_time_sync_notification_cb(onSntpSync);
-    for (size_t i = 0; i < NTP_SERVER_COUNT && i < SNTP_MAX_SERVERS; ++i) {
-        sntp_setservername(i, (char*)NTP_SERVERS[i]);
+    ensureNtpServersLoaded();
+    size_t serverCount = configuredNtpServers.size();
+    for (size_t i = 0; i < serverCount && i < SNTP_MAX_SERVERS; ++i) {
+        sntp_setservername(i, const_cast<char*>(configuredNtpServers[i].c_str()));
     }
     sntp_init();
 }
@@ -226,8 +305,10 @@ static void alignSystemTimeWithRtc() {
 }
 
 void setupTimeSync() {
-    setenv("TZ", TIMEZONE, 1);
-    tzset();
+    ensureTimezoneLoaded();
+    applyTimezoneEnv(currentTimezone);
+    ensureIntervalsLoaded();
+    ensureNtpServersLoaded();
 
     cachedLastNtpEpoch = (time_t)loadULongFromNVS(PREF_LAST_NTP_EPOCH);
     cachedLastNtpIso = loadStringFromNVS(PREF_LAST_NTP_ISO, String(""));
@@ -261,8 +342,10 @@ void loopTimeSync() {
 
     unsigned long nowMillis = millis();
 
+    ensureIntervalsLoaded();
+
     if (awaitingSntp) {
-        if (nowMillis - lastSyncRequestMillis > NTP_RETRY_INTERVAL) {
+        if (nowMillis - lastSyncRequestMillis > ntpRetryIntervalMs) {
             syncNtp(pendingRtcSync);
         }
         return;
@@ -271,11 +354,11 @@ void loopTimeSync() {
     bool needSync = false;
     if (!systemTimeIsValid()) {
         needSync = true;
-    } else if (nowMillis - lastSyncSuccessMillis > NTP_SYNC_INTERVAL) {
+    } else if (nowMillis - lastSyncSuccessMillis > ntpSyncIntervalMs) {
         needSync = true;
     }
 
-    if (needSync && nowMillis - lastSyncAttemptMillis > NTP_RETRY_INTERVAL) {
+    if (needSync && nowMillis - lastSyncAttemptMillis > ntpRetryIntervalMs) {
         syncNtp(true);
     }
 }
@@ -295,4 +378,74 @@ String formatIsoWithTz(time_t epoch) {
         out = out.substring(0, split) + ":" + out.substring(split);
     }
     return out;
+}
+
+String getTimezone() {
+    ensureTimezoneLoaded();
+    return currentTimezone;
+}
+
+void setTimezone(const String &tz) {
+    String trimmed = tz;
+    trimmed.trim();
+    if (trimmed.length() == 0) {
+        trimmed = String(TIMEZONE);
+    }
+    ensureTimezoneLoaded();
+    if (trimmed == currentTimezone) {
+        applyTimezoneEnv(currentTimezone);
+        return;
+    }
+    currentTimezone = trimmed;
+    timezoneLoaded = true;
+    saveStringToNVSns(PREF_TIME_NS, PREF_TIMEZONE, currentTimezone);
+    applyTimezoneEnv(currentTimezone);
+}
+
+std::vector<String> getConfiguredNtpServers() {
+    ensureNtpServersLoaded();
+    return configuredNtpServers;
+}
+
+void setConfiguredNtpServers(const std::vector<String> &servers) {
+    configuredNtpServers.clear();
+    for (const String &s : servers) {
+        String entry = s;
+        entry.trim();
+        if (entry.length() > 0) {
+            configuredNtpServers.push_back(entry);
+        }
+    }
+    if (configuredNtpServers.empty()) {
+        for (size_t i = 0; i < NTP_SERVER_COUNT; ++i) {
+            configuredNtpServers.push_back(String(NTP_SERVERS[i]));
+        }
+    }
+    ntpServersLoaded = true;
+    persistNtpServers();
+    configureSntp();
+}
+
+unsigned long getNtpSyncInterval() {
+    ensureIntervalsLoaded();
+    return ntpSyncIntervalMs;
+}
+
+void setNtpSyncInterval(unsigned long ms) {
+    if (ms < 60000UL) ms = 60000UL;
+    ntpSyncIntervalMs = ms;
+    intervalsLoaded = true;
+    saveULongToNVSns(PREF_TIME_NS, PREF_NTP_SYNC_MS, ntpSyncIntervalMs);
+}
+
+unsigned long getNtpRetryInterval() {
+    ensureIntervalsLoaded();
+    return ntpRetryIntervalMs;
+}
+
+void setNtpRetryInterval(unsigned long ms) {
+    if (ms < 1000UL) ms = 1000UL;
+    ntpRetryIntervalMs = ms;
+    intervalsLoaded = true;
+    saveULongToNVSns(PREF_TIME_NS, PREF_NTP_RETRY_MS, ntpRetryIntervalMs);
 }

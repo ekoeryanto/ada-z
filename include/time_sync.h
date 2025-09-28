@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <RTClib.h>
+#include <vector>
 
 // Function prototypes for time synchronization
 void setupTimeSync();
@@ -19,6 +20,16 @@ String getLastNtpSuccessIso();
 String getIsoTimestamp();
 // Format a specific epoch into ISO8601 with timezone offset (local) like 2025-09-28T14:13:28+07:00
 String formatIsoWithTz(time_t epoch);
+
+// Runtime-configurable time settings
+String getTimezone();
+void setTimezone(const String &tz);
+std::vector<String> getConfiguredNtpServers();
+void setConfiguredNtpServers(const std::vector<String> &servers);
+unsigned long getNtpSyncInterval();
+void setNtpSyncInterval(unsigned long ms);
+unsigned long getNtpRetryInterval();
+void setNtpRetryInterval(unsigned long ms);
 
 // RTC enable/disable control
 void setRtcEnabled(bool enabled);
