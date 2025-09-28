@@ -188,3 +188,20 @@ float getAdsTpScale(uint8_t channel) {
     char key[16]; snprintf(key, sizeof(key), "tp_scale_%d", channel);
     return loadFloatFromNVSns(CAL_NAMESPACE, key, 238.0f);
 }
+
+// Clear ADS per-channel buffers and reset smoothed values (useful after tp_scale changes)
+void clearAdsBuffers() {
+    for (int ch = 0; ch < 4; ++ch) {
+        adsSmoothedMa[ch] = 0.0f;
+        adsBufIdx[ch] = 0;
+        adsBufCount[ch] = 0;
+        for (int i = 0; i < ADS_MAX_BUF; ++i) adsBuf[ch][i] = 0;
+    }
+    // Reseed smoothed values from current readings to avoid long ramp-up
+    for (int ch = 0; ch < 4; ++ch) {
+        // perform a single read and push through the same path by calling readAdsMa
+        // using stored defaults; this will populate buffers with one entry each
+        float dummy = readAdsMa(ch, getAdsShuntOhm(ch), getAdsAmpGain(ch));
+        (void)dummy;
+    }
+}

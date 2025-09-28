@@ -2,6 +2,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <cstddef>
+
 // WiFi defaults
 #define DEFAULT_SSID "Perumda Tirta Patriot"
 #define DEFAULT_PASS "1sampai8"
@@ -20,12 +22,26 @@
 #define EMA_ALPHA 0.05f
 #define PRINT_TIME_INTERVAL 5000 // ms
 
+// Logging verbosity
+#ifndef ENABLE_VERBOSE_LOGS
+#define ENABLE_VERBOSE_LOGS 0
+#endif
+
+#if ENABLE_VERBOSE_LOGS
+#define LOG_VERBOSE(...) Serial.printf(__VA_ARGS__)
+#define LOG_VERBOSE_LN(msg) Serial.println(msg)
+#else
+#define LOG_VERBOSE(...)
+#define LOG_VERBOSE_LN(msg)
+#endif
+
 // Default per-sensor settings
 #define DEFAULT_SENSOR_ENABLED true
 #define DEFAULT_SENSOR_NOTIFICATION_INTERVAL (1 * 60 * 1000)
 
 // NTP / timezone
 extern const char* NTP_SERVERS[];
+extern const size_t NTP_SERVER_COUNT;
 #define TIMEZONE "GMT-7"
 #define NTP_SYNC_INTERVAL (24 * 3600 * 1000)
 #define NTP_RETRY_INTERVAL (5 * 60 * 1000)

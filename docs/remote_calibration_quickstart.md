@@ -8,7 +8,7 @@ Sebelum mulai:
 1) Verifikasi bacaan saat ini
 
 ```bash
-curl -s "http://<device_ip>/sensors/readings" | jq '.'
+curl -s "http://<device_ip>/api/sensors/readings" | jq '.'
 ```
 
 Perhatikan objek ADS (`id`: `ADS_A0`, `ADS_A1`) dan bidang `meta.ma_smoothed` serta `meta.cal_tp_scale_mv_per_ma`.
@@ -18,7 +18,7 @@ Perhatikan objek ADS (`id`: `ADS_A0`, `ADS_A1`) dan bidang `meta.ma_smoothed` se
 - Terapkan satu target ke semua channel ADS (default 0..1):
 
 ```bash
-curl -s -X POST "http://<device_ip>/ads/calibrate/auto" \
+curl -s -X POST "http://<device_ip>/api/ads/calibrate/auto" \
   -H 'Content-Type: application/json' \
   -d '{"target":2.1}' | jq '.'
 ```
@@ -26,7 +26,7 @@ curl -s -X POST "http://<device_ip>/ads/calibrate/auto" \
 - Terapkan target per-channel:
 
 ```bash
-curl -s -X POST "http://<device_ip>/ads/calibrate/auto" \
+curl -s -X POST "http://<device_ip>/api/ads/calibrate/auto" \
   -H 'Content-Type: application/json' \
   -d '{"channels":[{"channel":0,"target":2.1},{"channel":1,"target":4.8}] }' | jq '.'
 ```
@@ -36,7 +36,7 @@ Catatan: Endpoint menghitung `tp_scale_mv_per_ma` secara otomatis dari `ma_smoot
 3) Set tp_scale secara manual via `/ads/config`
 
 ```bash
-curl -s -X POST "http://<device_ip>/ads/config" \
+curl -s -X POST "http://<device_ip>/api/ads/config" \
   -H 'Content-Type: application/json' \
   -d '{"channels":[{"channel":0, "tp_scale_mv_per_ma": 795.44}] }' | jq '.'
 ```
@@ -46,7 +46,7 @@ curl -s -X POST "http://<device_ip>/ads/config" \
 - Terapkan target ke semua sensor ADC:
 
 ```bash
-curl -s -X POST "http://<device_ip>/adc/calibrate/auto" \
+curl -s -X POST "http://<device_ip>/api/adc/calibrate/auto" \
   -H 'Content-Type: application/json' \
   -d '{"target":4.8}' | jq '.'
 ```
@@ -54,25 +54,27 @@ curl -s -X POST "http://<device_ip>/adc/calibrate/auto" \
 - Terapkan target per-pin:
 
 ```bash
-curl -s -X POST "http://<device_ip>/adc/calibrate/auto" \
+curl -s -X POST "http://<device_ip>/api/adc/calibrate/auto" \
   -H 'Content-Type: application/json' \
   -d '{"sensors":[{"pin":35, "target":4.8}] }' | jq '.'
 ```
 
-5) Blocking span calibration for single ADC pin (ambil rata2 N sampel)
+5) Span calibration non-blocking untuk satu ADC pin (gunakan cache sampel)
 
 ```bash
-curl -s -X POST "http://<device_ip>/calibrate/pin" \
+curl -s -X POST "http://<device_ip>/api/calibrate/pin" \
   -H 'Content-Type: application/json' \
-  -d '{"pin":35, "value":4.8, "samples":20, "sample_delay_ms":50 }' | jq '.'
+  -d '{"pin":35, "target":4.8, "samples":20 }' | jq '.'
 ```
+
+Respon akan menyertakan `measured_raw_avg`, `samples_used`, dan `samples_from_cache` sehingga Anda dapat memastikan data yang dipakai berasal dari buffer terbaru. Bila `samples` tidak diberikan, firmware memakai seluruh cache yang tersedia atau jatuh ke pembacaan instan.
 
 6) Verifikasi kalibrasi
 
 ```bash
-curl -s "http://<device_ip>/calibrate?pin_index=0" | jq '.'
-curl -s "http://<device_ip>/calibrate/all" | jq '.'
-curl -s "http://<device_ip>/ads/config" | jq '.'
+curl -s "http://<device_ip>/api/calibrate?pin_index=0" | jq '.'
+curl -s "http://<device_ip>/api/calibrate/all" | jq '.'
+curl -s "http://<device_ip>/api/ads/config" | jq '.'
 ```
 
 Troubleshooting singkat

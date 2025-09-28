@@ -17,6 +17,8 @@ time_t getRtcEpoch();
 bool isPendingRtcSync();
 String getLastNtpSuccessIso();
 String getIsoTimestamp();
+// Format a specific epoch into ISO8601 with timezone offset (local) like 2025-09-28T14:13:28+07:00
+String formatIsoWithTz(time_t epoch);
 
 // RTC enable/disable control
 void setRtcEnabled(bool enabled);

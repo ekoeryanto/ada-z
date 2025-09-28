@@ -19,8 +19,10 @@ fi
 
 echo "Device: $DEVICE_IP  Channel: $ADS_CH  Target: $TARGET_BAR bar"
 
+BASE_URL="http://${DEVICE_IP}/api"
+
 read_json() {
-  curl -s "http://${DEVICE_IP}/sensors/readings" | jq -r "$1"
+  curl -s "${BASE_URL}/sensors/readings" | jq -r "$1"
 }
 
 # Fetch current ma_smoothed for channel
@@ -51,12 +53,12 @@ fi
 PAYLOAD=$(jq -n --argjson ch "[{\"channel\": $ADS_CH, \"tp_scale_mv_per_ma\": $SCALE}]" '{channels:$ch}')
 
 echo "Applying scale to device..."
-curl -s -X POST "http://${DEVICE_IP}/ads/config" -H 'Content-Type: application/json' -d "$PAYLOAD" | jq '.'
+curl -s -X POST "${BASE_URL}/ads/config" -H 'Content-Type: application/json' -d "$PAYLOAD" | jq '.'
 
 echo "Waiting 2s for device update..."
 sleep 2
 
 echo "Fetching updated sensor reading..."
-curl -s "http://${DEVICE_IP}/sensors/readings" | jq '.tags[] | select(.id=="ADS_A'${ADS_CH}'")'
+curl -s "${BASE_URL}/sensors/readings" | jq '.tags[] | select(.id=="ADS_A'${ADS_CH}'")'
 
 echo "Done"

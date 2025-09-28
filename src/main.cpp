@@ -112,7 +112,9 @@ void setup() {
         sensorEnabled[i] = enabled;
         sensorNotificationInterval[i] = interval;
         sensorLastNotificationMillis[i] = 0;
+        #if ENABLE_VERBOSE_LOGS
         Serial.printf("Sensor %d enabled=%d interval=%lu\n", i, enabled, interval);
+        #endif
     }
 
     // Initialize sensor runtime settings module
@@ -229,7 +231,9 @@ void loop() {
             int mv_raw = adcRawToMv(raw);
             int mv_sm = adcRawToMv(static_cast<int>(round(smoothed)));
             dataString += "," + String(raw) + "," + String(smoothed) + "," + String(volt) + "," + String(mv_raw) + "," + String(mv_sm);
+            #if ENABLE_VERBOSE_LOGS
             Serial.printf("AI%d Pin %d (raw): %d | (smoothed): %.2f | Voltage: %.3f V | mV_raw: %d mV | mV_smoothed: %d mV\n", i+1, getVoltageSensorPin(i), raw, smoothed, volt, mv_raw, mv_sm);
+            #endif
 
             if (sensorEnabled && sensorEnabled[i]) {
                 unsigned long interval = sensorNotificationInterval ? sensorNotificationInterval[i] : HTTP_NOTIFICATION_INTERVAL;
@@ -288,7 +292,9 @@ void loop() {
             float ma = readAdsMa(ch, shunt, ampGain);
             float depth = computeDepthMm(ma, DEFAULT_CURRENT_INIT_MA, DEFAULT_RANGE_MM, DEFAULT_DENSITY_WATER);
             dataString += "," + String(rawAds) + "," + String(mv) + "," + String(ma) + "," + String(depth);
+            #if ENABLE_VERBOSE_LOGS
             Serial.printf("ADS A%d raw: %d | mv: %.2f mV | ma: %.3f mA | depth: %.1f mm\n", ch, rawAds, mv, ma, depth);
+            #endif
         }
 
         // Always log the CSV data to SD
@@ -313,6 +319,7 @@ void loop() {
 
     // Service web server
     // Service OTA and web server
+    serviceWifiManager();
     handleOtaUpdate();
     handleWebServerClients();
 }

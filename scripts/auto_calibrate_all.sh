@@ -49,7 +49,8 @@ else
 fi
 if [ "$DRY_RUN" -eq 1 ]; then echo "Dry-run enabled (no changes will be posted)"; fi
 
-SENSORS_JSON=$(curl -s "http://${DEVICE_IP}/sensors/readings")
+BASE_URL="http://${DEVICE_IP}/api"
+SENSORS_JSON=$(curl -s "${BASE_URL}/sensors/readings")
 if [ -z "$SENSORS_JSON" ]; then
   echo "Failed to fetch sensors from device"
   exit 3
@@ -80,14 +81,13 @@ echo "$SENSORS_JSON" | jq -c '.tags[] | select(.source=="adc")' | while read -r 
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY RUN: would POST span calibration for $id -> $target"
   else
-  PAYLOAD=$(jq -n --argjson bn "{\"pin\": $pin, \"trigger_span_calibration\": true, \"span_pressure_value\": ($target|0+0)}" '$bn')
-    # Using HTTP POST /calibrate/pin
-    resp=$(curl -s -X POST "http://${DEVICE_IP}/calibrate/pin" -H 'Content-Type: application/json' -d "$PAYLOAD") || true
+  PAYLOAD=$(jq -n --argjson bn "{\"pin\": $pin, \"target\": ($target|0+0)}" '$bn')
+    resp=$(curl -s -X POST "${BASE_URL}/calibrate/pin" -H 'Content-Type: application/json' -d "$PAYLOAD") || true
     echo "Response: $resp"
     # small pause to let device re-seed smoothed ADC if needed
     sleep 0.5
     # fetch updated reading for this pin
-    updated=$(curl -s "http://${DEVICE_IP}/sensors/readings" | jq -c ".tags[] | select(.id==\"${id}\")") || true
+    updated=$(curl -s "${BASE_URL}/sensors/readings" | jq -c ".tags[] | select(.id==\"${id}\")") || true
     echo "Updated: $updated"
   fi
   count=$((count+1))

@@ -136,6 +136,37 @@ bool getAverages(int sensorIndex, float &avgRaw, float &avgSmoothed, float &avgV
     return true;
 }
 
+bool getRecentAverage(int sensorIndex, int maxSamples, float &avgRaw, float &avgSmoothed,
+                      float &avgVolt, int &samplesUsed) {
+    samplesUsed = 0;
+    if (sensorIndex < 0 || sensorIndex >= g_totalSensors) return false;
+    int available = filledCount[sensorIndex];
+    if (available == 0) return false;
+
+    int use = available;
+    if (maxSamples > 0 && maxSamples < available) {
+        use = maxSamples;
+    }
+
+    long sumRaw = 0;
+    double sumSm = 0.0;
+    double sumV = 0.0;
+    int cap = g_capacity;
+    int start = (writeIndex[sensorIndex] - use + cap) % cap;
+    for (int i = 0; i < use; ++i) {
+        int idx = (start + i) % cap;
+        sumRaw += buffers[sensorIndex][idx].raw;
+        sumSm += buffers[sensorIndex][idx].smoothed;
+        sumV += buffers[sensorIndex][idx].volt;
+    }
+
+    samplesUsed = use;
+    avgRaw = (float)sumRaw / (float)use;
+    avgSmoothed = (float)(sumSm / use);
+    avgVolt = (float)(sumV / use);
+    return true;
+}
+
 int getSampleCount(int sensorIndex) {
     if (sensorIndex < 0 || sensorIndex >= g_totalSensors) return 0;
     return filledCount[sensorIndex];
@@ -153,4 +184,15 @@ void deinitSampleStore() {
     filledCount.clear();
     g_totalSensors = 0;
     g_capacity = 0;
+}
+
+void clearSampleStore() {
+    // Reset write indices and filled counts and mark entries as empty
+    for (int i = 0; i < g_totalSensors; ++i) {
+        writeIndex[i] = 0;
+        filledCount[i] = 0;
+        for (int j = 0; j < g_capacity; ++j) buffers[i][j].raw = INT_MIN;
+        // Persist cleared buffer so restart/resume doesn't restore old samples
+        persistSensor(i);
+    }
 }

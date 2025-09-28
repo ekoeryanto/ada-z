@@ -6,6 +6,8 @@
 
 #include "esp_adc_cal.h"
 #include "sd_logger.h"
+// Storage helpers provide NVS read/write helpers used to fetch runtime config like divider_mv
+#include "storage_helpers.h"
 
 // ADC calibration handle and characteristics (declared early so conversion helpers can use it)
 static esp_adc_cal_characteristics_t adc_chars;
@@ -25,28 +27,44 @@ static SensorCalibration voltageSensorCalibrations[NUM_VOLTAGE_SENSORS];
 static int adcNumSamples = 3; // default
 
 float convert010V(int adc) {
-    // Convert raw ADC to millivolts using characterization
-    int mv = esp_adc_cal_raw_to_voltage(adc, &adc_chars); // returns mV for ADC input (0..~3300)
-    // Convert mV of ADC pin (after divider) to equivalent 0-10V value
-    // We assume the voltage divider maps 0-10V -> 0-3.3V at ADC input.
-    // So scale factor is 10.0 / 3.3
-    float Volt = ((float)mv / 1000.0f) * (10.0f / 3.3f);
+    // Convert raw ADC to millivolts using esp_adc_cal for best accuracy
+    int mv = esp_adc_cal_raw_to_voltage(adc, &adc_chars); // mV at ADC input (approx 0..3300)
 
+    // Allow divider voltage to be configured at runtime via NVS key adc_cfg/divider_mv
+    float divider_mv = loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+    if (divider_mv <= 0.0f) divider_mv = 3300.0f;
+
+    // Vadc is voltage seen by ADC (in volts)
+    float Vadc = (float)mv / 1000.0f; // ~0..3.3
+
+    // Map measured ADC mV back to original 0..10V input using divider ratio
+    // Volt_input = mv * (10.0 / divider_mv)
+    float voltage_v = (float)mv * (10.0f / divider_mv);
+
+    // Apply vendor-provided piecewise linear correction to improve linearity
+    // based on measured Vadc ranges in the sample code
     float Vcal = 0.0f;
-    float Vadc = (float)mv / 1000.0f;
 
-    if (Vadc <= 0.0f) {
+    // Detect true 0 and true saturation robustly (avoid exact equality checks)
+    if (mv <= 0 || Vadc <= 0.0001f) {
         Vcal = 0.0f;
-    } else if (Vadc > 0.01f && Vadc <= 0.96f) {
-        Vcal = 1.0345f * Volt + 0.2897f;
-    } else if (Vadc > 0.96f && Vadc <= 1.52f) {
-        Vcal = 1.0029f * Volt + 0.3814f;
-    } else if (Vadc > 1.52f && Vadc < 3.3f) {
-        Vcal = 0.932f * Volt + 0.7083f;
-    } else { // covers Vadc >= 3.3f and any unexpected values
-        Vcal = 10.0f;
+    } else {
+        // Consider ADC near full-scale as saturation: use small margin below divider_mv
+        const int SAT_MARGIN_MV = 4; // 4 mV margin
+        if (mv >= (int)(divider_mv) - SAT_MARGIN_MV || adc >= 4095) {
+            Vcal = 10.0f;
+        } else if (Vadc > 0.01f && Vadc <= 0.96f) {
+            Vcal = 1.0345f * voltage_v + 0.2897f;
+        } else if (Vadc > 0.96f && Vadc <= 1.52f) {
+            Vcal = 1.0029f * voltage_v + 0.3814f;
+        } else /* Vadc > 1.52 */ {
+            Vcal = 0.932f * voltage_v + 0.7083f;
+        }
     }
 
+    // Clamp final value to 0..10 V
+    if (Vcal < 0.0f) Vcal = 0.0f;
+    if (Vcal > 10.0f) Vcal = 10.0f;
     return Vcal;
 }
 
@@ -262,6 +280,5 @@ void setAdcNumSamples(int n) {
     if (n < 1) return;
     saveIntToNVSns("adc_cfg", "num_samples", n);
     // Update runtime variable
-    extern int adcNumSamples;
     adcNumSamples = n;
 }

@@ -11,6 +11,7 @@
 #include "current_pressure_sensor.h"
 #include "device_id.h"
 #include "sample_store.h"
+#include "wifi_manager_module.h"
 #include <ArduinoJson.h>
 #include "storage_helpers.h"
 #include "json_helper.h"
@@ -32,6 +33,60 @@ int webServerPort = 0;
 
 // SD availability flag: initialize once at startup to avoid repeated SD.begin() calls
 static bool sdReady = false;
+
+static const char* contentTypeFromPath(const String &path) {
+    if (path.endsWith(".html")) return "text/html";
+    if (path.endsWith(".htm")) return "text/html";
+    if (path.endsWith(".js")) return "application/javascript";
+    if (path.endsWith(".css")) return "text/css";
+    if (path.endsWith(".json")) return "application/json";
+    if (path.endsWith(".yaml") || path.endsWith(".yml")) return "application/x-yaml";
+    if (path.endsWith(".svg")) return "image/svg+xml";
+    if (path.endsWith(".png")) return "image/png";
+    if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+    if (path.endsWith(".gif")) return "image/gif";
+    if (path.endsWith(".ico")) return "image/x-icon";
+    if (path.endsWith(".txt")) return "text/plain";
+    return "application/octet-stream";
+}
+
+static bool streamSdFile(const String &path, const char* contentTypeOverride = nullptr) {
+    if (!sdReady) return false;
+    if (!SD.exists(path.c_str())) return false;
+    File f = SD.open(path.c_str(), FILE_READ);
+    if (!f) return false;
+    const char* ct = contentTypeOverride ? contentTypeOverride : contentTypeFromPath(path);
+    server->streamFile(f, ct);
+    f.close();
+    return true;
+}
+
+// Serve a file from SD with optional gzip fallback. If the client accepts gzip
+// and a .gz sibling exists, serve the gzipped file with Content-Encoding header.
+// forward-declare setCorsHeaders so helper can call it even if defined later
+void setCorsHeaders();
+
+static bool streamSdFileWithGzip(const String &path, const char* contentTypeOverride = nullptr) {
+    if (!sdReady) return false;
+    // If client accepts gzip, prefer .gz file
+    String ae = server->header("Accept-Encoding");
+    bool clientAcceptsGzip = ae.indexOf("gzip") >= 0;
+
+    String gzPath = path + String(".gz");
+    if (clientAcceptsGzip && SD.exists(gzPath.c_str())) {
+        File f = SD.open(gzPath.c_str(), FILE_READ);
+        if (!f) return false;
+        const char* ct = contentTypeOverride ? contentTypeOverride : contentTypeFromPath(path);
+        setCorsHeaders();
+        server->sendHeader("Content-Encoding", "gzip", true);
+        server->streamFile(f, ct);
+        f.close();
+        return true;
+    }
+
+    // Fallback to plain file
+    return streamSdFile(path, contentTypeOverride);
+}
 
 // Track OTA upload outcome between the streaming handler and final HTTP_POST response
 static bool otaLastAuthRejected = false;
@@ -62,15 +117,19 @@ const char* PREF_HTTP_URL = "http_url";
 void saveConfig() {
     // Example: save HTTP_NOTIFICATION_URL if needed
     // saveStringToNVSns(PREF_NAMESPACE, PREF_HTTP_URL, String(HTTP_NOTIFICATION_URL));
+    #if ENABLE_VERBOSE_LOGS
     Serial.println("Configuration saved.");
+    #endif
 }
 
 void loadConfig() {
     // Read persisted values from NVS and print for debug
     String httpUrl = loadStringFromNVSns(PREF_NAMESPACE, PREF_HTTP_URL, String("N/A"));
+    #if ENABLE_VERBOSE_LOGS
     Serial.print("Loaded HTTP URL: ");
     Serial.println(httpUrl);
     Serial.println("Configuration loaded.");
+    #endif
 }
 
 void handleConfig() {
@@ -81,8 +140,10 @@ void handleConfig() {
         }
 
         String body = server->arg("plain");
+        #if ENABLE_VERBOSE_LOGS
         Serial.print("Received config POST: ");
         Serial.println(body);
+        #endif
 
                 JsonDocument doc;
         DeserializationError error = deserializeJson(doc, body);
@@ -97,8 +158,10 @@ void handleConfig() {
         // Example: Update HTTP_NOTIFICATION_URL (requires a non-macro variable)
         // Persist api_key into NVS so the /update OTA endpoint can validate uploads.
         if (doc["http_notification_url"].is<String>()) {
+            #if ENABLE_VERBOSE_LOGS
             Serial.print("New HTTP Notification URL: ");
             Serial.println(doc["http_notification_url"].as<String>());
+            #endif
             // saveConfig(); // Call save config after updating variables
         }
         if (doc["api_key"].is<String>()) {
@@ -127,11 +190,13 @@ void loadCalibration() {
     float zeroPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, CAL_ZERO_PRESSURE_VALUE, 0.0f);
     float spanPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, CAL_SPAN_PRESSURE_VALUE, 0.0f);
 
+    #if ENABLE_VERBOSE_LOGS
     Serial.println("Calibration loaded:");
     Serial.printf("  Zero Raw ADC: %.2f\n", zeroRawAdc);
     Serial.printf("  Span Raw ADC: %.2f\n", spanRawAdc);
     Serial.printf("  Zero Pressure Value: %.2f\n", zeroPressureValue);
     Serial.printf("  Span Pressure Value: %.2f\n", spanPressureValue);
+    #endif
     // In a real scenario, you'd pass these to the pressure sensor module
     // For now, we'll just print it.
 }
@@ -151,6 +216,42 @@ static int tagToIndex(const String &tag) {
     return -1;
 }
 
+static void captureCalibrationSamples(int pinIndex, int requestedSamples,
+                                      float &avgRaw, float &avgSmoothed, float &avgVolt,
+                                      int &samplesUsed, bool &usedCache) {
+    avgRaw = 0.0f;
+    avgSmoothed = 0.0f;
+    avgVolt = 0.0f;
+    samplesUsed = 0;
+    usedCache = false;
+
+    if (requestedSamples < 0) requestedSamples = 0;
+    bool haveAvg = false;
+    if (requestedSamples > 0) {
+        haveAvg = getRecentAverage(pinIndex, requestedSamples, avgRaw, avgSmoothed, avgVolt, samplesUsed);
+    } else {
+        haveAvg = getRecentAverage(pinIndex, 0, avgRaw, avgSmoothed, avgVolt, samplesUsed);
+    }
+
+    if (haveAvg) {
+        usedCache = true;
+        if (samplesUsed <= 0) {
+            samplesUsed = requestedSamples > 0 ? requestedSamples : getSampleCount(pinIndex);
+            if (samplesUsed <= 0) samplesUsed = 1;
+        }
+        return;
+    }
+
+    // Fallback to immediate readings
+    int pin = getVoltageSensorPin(pinIndex);
+    avgRaw = (float)analogRead(pin);
+    avgSmoothed = getSmoothedADC(pinIndex);
+    if (avgSmoothed <= 0.0f) avgSmoothed = avgRaw;
+    avgVolt = getSmoothedVoltagePressure(pinIndex);
+    samplesUsed = 1;
+    usedCache = false;
+}
+
 void handleCalibrate() {
     if (server->method() == HTTP_POST) {
         if (!server->hasArg("plain")) {
@@ -159,8 +260,10 @@ void handleCalibrate() {
         }
 
         String body = server->arg("plain");
+        #if ENABLE_VERBOSE_LOGS
         Serial.print("Received calibrate POST: ");
         Serial.println(body);
+        #endif
 
                 JsonDocument doc;
         DeserializationError error = deserializeJson(doc, body);
@@ -199,7 +302,9 @@ void handleCalibrate() {
             float spanPressureValue = doc["span_pressure_value"].as<float>();
 
             saveCalibrationForPin(pinIndex, zeroRawAdc, spanRawAdc, zeroPressureValue, spanPressureValue);
+            #if ENABLE_VERBOSE_LOGS
             Serial.printf("Calibration saved for pin index %d\n", pinIndex);
+            #endif
             sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Calibration points saved\"}");
             return;
         }
@@ -281,39 +386,43 @@ void setupWebServer(int port /*= 80*/) {
     sdReady = false;
     if (SD.begin()) {
         sdReady = true;
+        #if ENABLE_VERBOSE_LOGS
         Serial.println("SD initialized for static file serving.");
+        #endif
     } else {
-        Serial.println("SD not available at startup; /swagger endpoints disabled");
+        Serial.println("SD not available at startup; static assets will fallback to minimal responses");
     }
 
-    server->on("/time/sync", HTTP_POST, []() {
+    // Static web client at root
+    server->on("/", HTTP_GET, []() {
+        if (streamSdFileWithGzip(String("/docs/client.html"))) return;
+        server->send(200, "text/html",
+            "<html><body><h1>press-32</h1><p>Upload docs/client.html to the SD card to serve the web client.</p></body></html>");
+    });
+
+    server->on("/api/time/sync", HTTP_POST, []() {
         // Trigger immediate NTP sync and request RTC update if RTC present
         syncNtp(isRtcPresent());
         sendCorsJson(200, "application/json", "{\"status\":\"ok\", \"message\":\"NTP sync triggered\"}");
     });
     // Expose a generic config endpoint to GET/POST small config (persisted to NVS)
-    server->on("/config", HTTP_ANY, []() {
+    server->on("/api/config", HTTP_ANY, []() {
         handleConfig();
     });
-    server->on("/time/status", HTTP_GET, []() {
+    server->on("/api/time/status", HTTP_GET, []() {
     JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
-        char isoBuf[32];
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
         if (isRtcPresent()) {
-            struct tm *tm_rtc = gmtime(&rtcEpoch);
-            strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
-            doc["rtc_iso"] = String(isoBuf);
+            doc["rtc_iso"] = formatIsoWithTz(rtcEpoch);
         } else {
             doc["rtc_iso"] = "";
         }
         time_t sysEpoch = time(nullptr);
-        struct tm *tm_sys = gmtime(&sysEpoch);
         doc["system_epoch"] = (unsigned long)sysEpoch;
-        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
-        doc["system_iso"] = String(isoBuf);
+        doc["system_iso"] = formatIsoWithTz(sysEpoch);
         doc["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
         doc["last_ntp_iso"] = getLastNtpSuccessIso();
         doc["pending_rtc_sync"] = isPendingRtcSync() ? 1 : 0;
@@ -322,11 +431,52 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
+    server->on("/api/system", HTTP_GET, []() {
+        JsonDocument doc;
+        bool connected = WiFi.status() == WL_CONNECTED;
+        doc["connected"] = connected ? 1 : 0;
+        doc["ip"] = WiFi.localIP().toString();
+        doc["hostname"] = WiFi.getHostname();
+        doc["ssid"] = WiFi.SSID();
+        doc["rssi"] = connected ? WiFi.RSSI() : 0;
+        doc["uptime_ms"] = (unsigned long)millis();
+        doc["rtc_found"] = isRtcPresent() ? 1 : 0;
+        doc["rtc_enabled"] = getRtcEnabled() ? 1 : 0;
+        doc["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
+        doc["last_ntp_iso"] = getLastNtpSuccessIso();
+        doc["time_iso"] = getIsoTimestamp();
+        String resp;
+        serializeJson(doc, resp);
+        sendCorsJson(200, "application/json", resp);
+    });
+
+    server->on("/api/diagnostics/network", HTTP_GET, []() {
+    JsonDocument doc;
+        bool connected = isWifiConnected();
+        doc["connected"] = connected ? 1 : 0;
+        doc["status"] = (int)WiFi.status();
+        doc["ssid"] = WiFi.SSID();
+        doc["rssi"] = connected ? WiFi.RSSI() : 0;
+        doc["ip"] = connected ? WiFi.localIP().toString() : String("");
+        doc["last_disconnect_ms"] = getLastWifiDisconnectMillis();
+        uint32_t reason = getLastWifiDisconnectReason();
+        doc["last_disconnect_reason"] = reason;
+        doc["last_disconnect_reason_str"] = String(getWifiDisconnectReasonString(reason));
+        doc["last_reconnect_attempt_ms"] = getLastWifiReconnectAttemptMillis();
+        doc["next_reconnect_attempt_ms"] = getNextWifiReconnectAttemptMillis();
+        doc["reconnect_backoff_ms"] = getCurrentWifiReconnectBackoffMs();
+        doc["last_got_ip_ms"] = getLastWifiGotIpMillis();
+        doc["uptime_ms"] = millis();
+        String resp;
+        serializeJson(doc, resp);
+        sendCorsJson(200, "application/json", resp);
+    });
+
     // Helper function to handle tag-based sensor reading logic
     auto handleTagRead = [](const String& tag) {
-        int sampling = 100;
+        int sampling = 0;
         if (server->hasArg("sampling")) sampling = server->arg("sampling").toInt();
-        if (sampling <= 0) sampling = 100;
+        if (sampling < 0) sampling = 0;
 
         if (tag.length() == 0) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing tag\"}");
@@ -340,21 +490,38 @@ void setupWebServer(int port /*= 80*/) {
         }
 
         int pin = getVoltageSensorPin(pinIndex);
-        unsigned long sum = 0;
-        for (int i = 0; i < sampling; ++i) {
-            sum += (unsigned long)analogRead(pin);
-            delay(1);
+        float avgRaw = 0.0f;
+        float avgSmoothed = 0.0f;
+        float avgVolt = 0.0f;
+        int samplesUsed = 0;
+        bool haveAvg = false;
+
+        if (sampling > 0) {
+            haveAvg = getRecentAverage(pinIndex, sampling, avgRaw, avgSmoothed, avgVolt, samplesUsed);
+        } else {
+            haveAvg = getRecentAverage(pinIndex, 0, avgRaw, avgSmoothed, avgVolt, samplesUsed);
         }
-        float avgRaw = ((float)sum) / ((float)sampling);
+
+        if (!haveAvg) {
+            // Fallback to instantaneous readings (single conversion, no delay)
+            avgRaw = (float)analogRead(pin);
+            avgSmoothed = getSmoothedADC(pinIndex);
+            if (avgSmoothed <= 0.0f) avgSmoothed = avgRaw;
+            avgVolt = getSmoothedVoltagePressure(pinIndex);
+            samplesUsed = 1;
+        }
+
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-        float converted = (avgRaw * cal.scale) + cal.offset;
+        float converted = haveAvg ? avgVolt : (avgSmoothed * cal.scale) + cal.offset;
 
         JsonDocument outDoc;
         outDoc["tag"] = tag;
         outDoc["pin_index"] = pinIndex;
         outDoc["pin"] = pin;
-        outDoc["samples"] = sampling;
-        outDoc["measured_raw_avg"] = avgRaw;
+        outDoc["samples_requested"] = sampling;
+        outDoc["samples_used"] = samplesUsed;
+        outDoc["measured_raw_avg"] = roundToDecimals(avgRaw, 2);
+        outDoc["measured_filtered_avg"] = roundToDecimals(avgSmoothed, 2);
         outDoc["converted"]["value"] = roundToDecimals(converted, 2);
         outDoc["converted"]["unit"] = "bar";
 
@@ -365,7 +532,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // Read a single sensor by tag (supports query ?tag=AI1 or path /tag/AI1)
     // Default sampling is 100; can be overridden with ?sampling=N
-    server->on("/tag", HTTP_GET, [handleTagRead]() {
+    server->on("/api/tag", HTTP_GET, [handleTagRead]() {
         String tag;
         if (server->hasArg("tag")) {
             tag = server->arg("tag");
@@ -380,16 +547,16 @@ void setupWebServer(int port /*= 80*/) {
     // Provide support for path-style /tag/AI1 by routing through notFound handler
     server->onNotFound([handleTagRead]() {
         String uri = server->uri();
-        if (!uri.startsWith("/tag/")) {
-            // default 404
+        const String prefix = "/api/tag/";
+        if (!uri.startsWith(prefix)) {
             sendCorsJson(404, "application/json", "{\"status\":\"error\",\"message\":\"Not found\"}");
             return;
         }
-        String tag = uri.substring(5);
+        String tag = uri.substring(prefix.length());
         handleTagRead(tag);
     });
     // Secure OTA update endpoint (multipart/form-data upload)
-    server->on("/update", HTTP_POST, []() {
+    server->on("/api/update", HTTP_POST, []() {
         if (otaLastAuthRejected) {
             sendCorsJson(401, "application/json", "{\"status\":\"error\",\"message\":\"OTA authentication failed\"}");
         } else if (otaLastHadError || !otaLastSucceeded) {
@@ -461,17 +628,14 @@ void setupWebServer(int port /*= 80*/) {
         }
     });
     // RTC read/set endpoints
-    server->on("/time/rtc", HTTP_GET, []() {
+    server->on("/api/time/rtc", HTTP_GET, []() {
         JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
-        char isoBuf[32];
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
         if (isRtcPresent()) {
-            struct tm *tm_rtc = gmtime(&rtcEpoch);
-            strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
-            doc["rtc_iso"] = String(isoBuf);
+            doc["rtc_iso"] = formatIsoWithTz(rtcEpoch);
         } else {
             doc["rtc_iso"] = "";
         }
@@ -480,7 +644,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    server->on("/time/rtc", HTTP_POST, []() {
+    server->on("/api/time/rtc", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
         JsonDocument doc;
@@ -519,7 +683,7 @@ void setupWebServer(int port /*= 80*/) {
 
         sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"No valid action provided\"}");
     });
-    server->on("/calibrate/pin", HTTP_POST, []() {
+    server->on("/api/calibrate/pin", HTTP_POST, []() {
         if (!server->hasArg("plain")) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing JSON body\"}");
             return;
@@ -543,33 +707,42 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-        // Blocking sampled calibration: if caller provides a `value` (target pressure),
-        // take N analog samples (averaged) and use that averaged raw as the span point.
-        if (!doc["value"].isNull() && (doc["value"].is<float>() || doc["value"].is<int>())) {
-            float targetPressure = doc["value"].is<float>() ? doc["value"].as<float>() : (float)doc["value"].as<int>();
-            int samples = !doc["samples"].isNull() ? doc["samples"].as<int>() : 15;
-            int sample_delay_ms = !doc["sample_delay_ms"].isNull() ? doc["sample_delay_ms"].as<int>() : 50;
+        // Non-blocking span calibration: leverage sample store / smoothed data instead of
+        // taking synchronous delay-based samples inside the request handler.
+        if ((!doc["value"].isNull() && (doc["value"].is<float>() || doc["value"].is<int>())) ||
+            (!doc["target"].isNull() && (doc["target"].is<float>() || doc["target"].is<int>()))) {
 
-            unsigned long sum = 0;
-            for (int i = 0; i < samples; ++i) {
-                int raw = analogRead(getVoltageSensorPin(pinIndex));
-                sum += (unsigned long)raw;
-                delay(sample_delay_ms);
+            float targetPressure = 0.0f;
+            if (doc["target"].is<float>() || doc["target"].is<int>()) {
+                targetPressure = doc["target"].is<float>() ? doc["target"].as<float>() : (float)doc["target"].as<int>();
+            } else {
+                targetPressure = doc["value"].is<float>() ? doc["value"].as<float>() : (float)doc["value"].as<int>();
             }
-            float avgRaw = ((float)sum) / ((float)samples);
+
+            int requestedSamples = doc["samples"].is<int>() ? doc["samples"].as<int>() : 0;
+
+            float avgRaw, avgSmoothed, avgVolt;
+            int samplesUsed;
+            bool usedCache;
+            captureCalibrationSamples(pinIndex, requestedSamples, avgRaw, avgSmoothed, avgVolt, samplesUsed, usedCache);
 
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-            // Save calibration: keep existing zero, set span to measured avg with provided pressure
+            // Save calibration: keep existing zero, set span to measured average raw with provided pressure
             saveCalibrationForPin(pinIndex, cal.zeroRawAdc, avgRaw, cal.zeroPressureValue, targetPressure);
             // Reseed smoothed ADC so readings update immediately
             setupVoltagePressureSensor();
 
             JsonDocument respDoc;
             respDoc["status"] = "success";
-            respDoc["message"] = "Blocking span calibration applied";
+            respDoc["message"] = "Span calibration applied";
             respDoc["pin_index"] = pinIndex;
             respDoc["pin"] = getVoltageSensorPin(pinIndex);
-            respDoc["measured_raw_avg"] = avgRaw;
+            respDoc["measured_raw_avg"] = roundToDecimals(avgRaw, 2);
+            respDoc["measured_filtered_avg"] = roundToDecimals(avgSmoothed, 2);
+            respDoc["measured_converted_avg"] = roundToDecimals(avgVolt, 2);
+            respDoc["samples_requested"] = requestedSamples;
+            respDoc["samples_used"] = samplesUsed;
+            respDoc["samples_from_cache"] = usedCache ? 1 : 0;
             respDoc["span_pressure_value"] = targetPressure;
             String resp;
             serializeJson(respDoc, resp);
@@ -603,7 +776,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid calibration parameters\"}");
     });
     // Convenience: apply a default calibration mapping 0..4095 -> 0..10 bar
-    server->on("/calibrate/default", HTTP_POST, []() {
+    server->on("/api/calibrate/default", HTTP_POST, []() {
         int n = getNumVoltageSensors();
         for (int i = 0; i < n; ++i) {
             saveCalibrationForPin(i, 0.0f, 4095.0f, 0.0f, 10.0f);
@@ -614,7 +787,7 @@ void setupWebServer(int port /*= 80*/) {
     });
 
     // Convenience: apply default calibration for a single pin by pin
-    server->on("/calibrate/default/pin", HTTP_POST, []() {
+    server->on("/api/calibrate/default/pin", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing JSON body\"}"); return; }
     String body = server->arg("plain");
             JsonDocument doc;
@@ -639,12 +812,12 @@ void setupWebServer(int port /*= 80*/) {
 
     // ADC-prefixed calibration endpoints for consistency
     // Delegate pin-level calibration to existing handler so both paths behave the same
-    server->on("/adc/calibrate/pin", HTTP_ANY, []() {
+    server->on("/api/adc/calibrate/pin", HTTP_ANY, []() {
         handleCalibrate();
     });
 
     // Auto-calibration under /adc prefix: apply span using current smoothed ADC readings
-    server->on("/adc/calibrate/auto", HTTP_POST, []() {
+    server->on("/api/adc/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -655,6 +828,7 @@ void setupWebServer(int port /*= 80*/) {
         JsonDocument resp;
         JsonArray results = resp["results"].to<JsonArray>();
         std::map<int, float> targets;
+        int requestedSamples = doc["samples"].is<int>() ? doc["samples"].as<int>() : 0;
 
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
@@ -698,6 +872,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
+        bool appliedAny = false;
         for (auto const& kv : targets) {
             int pinIndex = kv.first;
             float targetPressure = kv.second;
@@ -709,19 +884,30 @@ void setupWebServer(int port /*= 80*/) {
                 r["message"] = "unknown sensor";
                 continue;
             }
-            float smoothed = getSmoothedADC(pinIndex);
-            float spanRaw = round(smoothed);
+            float avgRaw, avgSmoothed, avgVolt;
+            int samplesUsed;
+            bool usedCache;
+            captureCalibrationSamples(pinIndex, requestedSamples, avgRaw, avgSmoothed, avgVolt, samplesUsed, usedCache);
+
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-            saveCalibrationForPin(pinIndex, cal.zeroRawAdc, spanRaw, cal.zeroPressureValue, targetPressure);
-            setupVoltagePressureSensor();
+            saveCalibrationForPin(pinIndex, cal.zeroRawAdc, avgRaw, cal.zeroPressureValue, targetPressure);
+            appliedAny = true;
 
             JsonObject r = results.add<JsonObject>();
             r["pin"] = pin;
             r["pin_index"] = pinIndex;
-            r["measured_smoothed"] = smoothed;
-            r["applied_span_raw"] = spanRaw;
+            r["measured_raw_avg"] = roundToDecimals(avgRaw, 2);
+            r["measured_filtered_avg"] = roundToDecimals(avgSmoothed, 2);
+            r["measured_converted_avg"] = roundToDecimals(avgVolt, 2);
+            r["samples_requested"] = requestedSamples;
+            r["samples_used"] = samplesUsed;
+            r["samples_from_cache"] = usedCache ? 1 : 0;
             r["span_pressure_value"] = targetPressure;
             r["status"] = "applied";
+        }
+
+        if (appliedAny) {
+            setupVoltagePressureSensor();
         }
 
         String out;
@@ -730,7 +916,7 @@ void setupWebServer(int port /*= 80*/) {
     });
 
     // SD error log endpoints
-    server->on("/sd/error_log", HTTP_GET, []() {
+    server->on("/api/sd/error_log", HTTP_GET, []() {
         int lines = -1;
         if (server->hasArg("lines")) lines = server->arg("lines").toInt();
         String content = readErrorLog(lines);
@@ -741,12 +927,43 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "text/plain", content);
     });
 
-    server->on("/sd/error_log/clear", HTTP_POST, []() {
+    server->on("/api/sd/error_log/clear", HTTP_POST, []() {
         clearErrorLog();
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"error log cleared\"}");
     });
+    server->on("/api/sd/pending_notifications", HTTP_GET, []() {
+    JsonDocument doc;
+        doc["sd_enabled"] = getSdEnabled() ? 1 : 0;
+        doc["sd_card_found"] = sdCardFound ? 1 : 0;
+        size_t pendingCount = countPendingNotifications();
+        doc["pending_count"] = (uint32_t)pendingCount;
+        doc["file_size"] = (uint32_t)pendingNotificationsFileSize();
+        bool includeContent = false;
+        if (server->hasArg("include")) {
+            includeContent = server->arg("include").toInt() != 0;
+        }
+        int lines = -1;
+        if (server->hasArg("lines")) {
+            lines = server->arg("lines").toInt();
+        }
+        if (includeContent && sdCardFound && pendingCount > 0) {
+            doc["content"] = readPendingNotifications(lines);
+        }
+        String resp;
+        serializeJson(doc, resp);
+        sendCorsJson(200, "application/json", resp);
+    });
+
+    server->on("/api/sd/pending_notifications/clear", HTTP_POST, []() {
+        bool ok = clearPendingNotifications();
+        if (ok) {
+            sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"pending notifications cleared\"}");
+        } else {
+            sendCorsJson(500, "application/json", "{\"status\":\"error\",\"message\":\"failed to clear pending notifications\"}");
+        }
+    });
     // ADS auto-calibration: compute and persist tp_scale (mV per mA) so TP5551-derived voltage maps to target pressure
-    server->on("/ads/calibrate/auto", HTTP_POST, []() {
+    server->on("/api/ads/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -825,7 +1042,7 @@ void setupWebServer(int port /*= 80*/) {
     // POST body options:
     //  { "target": 4.8 }                -> apply target to all ADC sensors
     //  { "sensors": [ {"pin":35, "target":4.8}, ... ] } -> per-pin targets
-    server->on("/calibrate/auto", HTTP_POST, []() {
+    server->on("/api/calibrate/auto", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -836,6 +1053,7 @@ void setupWebServer(int port /*= 80*/) {
         JsonDocument resp;
         JsonArray results = resp["results"].to<JsonArray>();
         std::map<int, float> targets; // sensorIndex -> pressure
+        int requestedSamples = doc["samples"].is<int>() ? doc["samples"].as<int>() : 0;
 
         if (!doc["sensors"].isNull() && doc["sensors"].is<JsonArray>()) {
             for (JsonObject so : doc["sensors"].as<JsonArray>()) {
@@ -881,6 +1099,7 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
+        bool appliedAny = false;
         // For each target, measure current smoothed ADC and save as span
         for (auto const& kv : targets) {
             int pinIndex = kv.first;
@@ -894,31 +1113,38 @@ void setupWebServer(int port /*= 80*/) {
                 continue;
             }
 
-            // read smoothed ADC (current averaged value)
-            float smoothed = getSmoothedADC(pinIndex);
-            // use round(smoothed) as raw span
-            float spanRaw = round(smoothed);
-            struct SensorCalibration cal = getCalibrationForPin(pinIndex);
-            saveCalibrationForPin(pinIndex, cal.zeroRawAdc, spanRaw, cal.zeroPressureValue, targetPressure);
+            float avgRaw, avgSmoothed, avgVolt;
+            int samplesUsed;
+            bool usedCache;
+            captureCalibrationSamples(pinIndex, requestedSamples, avgRaw, avgSmoothed, avgVolt, samplesUsed, usedCache);
 
-            // reseed sensor smoothing so values update immediately
-            setupVoltagePressureSensor();
+            struct SensorCalibration cal = getCalibrationForPin(pinIndex);
+            saveCalibrationForPin(pinIndex, cal.zeroRawAdc, avgRaw, cal.zeroPressureValue, targetPressure);
+            appliedAny = true;
 
             JsonObject r = results.add<JsonObject>();
             r["pin"] = pin;
             r["pin_index"] = pinIndex;
-            r["measured_smoothed"] = smoothed;
-            r["applied_span_raw"] = spanRaw;
+            r["measured_raw_avg"] = roundToDecimals(avgRaw, 2);
+            r["measured_filtered_avg"] = roundToDecimals(avgSmoothed, 2);
+            r["measured_converted_avg"] = roundToDecimals(avgVolt, 2);
+            r["samples_requested"] = requestedSamples;
+            r["samples_used"] = samplesUsed;
+            r["samples_from_cache"] = usedCache ? 1 : 0;
             r["span_pressure_value"] = targetPressure;
             r["status"] = "applied";
+        }
+
+        if (appliedAny) {
+            setupVoltagePressureSensor();
         }
 
         String out;
         serializeJson(resp, out);
         sendCorsJson(200, "application/json", out);
     });
-    server->on("/calibrate", handleCalibrate);
-    server->on("/calibrate/all", HTTP_GET, []() {
+    server->on("/api/calibrate", handleCalibrate);
+    server->on("/api/calibrate/all", HTTP_GET, []() {
     JsonDocument doc;
             for (int i = 0; i < getNumVoltageSensors(); ++i) {
                 struct SensorCalibration cal = getCalibrationForPin(i);
@@ -938,7 +1164,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", response);
     });
     // --- Sensors config endpoints ---
-    server->on("/sensors/config", HTTP_GET, []() {
+    server->on("/api/sensors/config", HTTP_GET, []() {
         int n = getConfiguredNumSensors();
     JsonDocument doc;
         doc["num_sensors"] = n;
@@ -955,7 +1181,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", response);
     });
 
-    server->on("/sensors/config", HTTP_POST, []() {
+    server->on("/api/sensors/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) {
             sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing JSON body\"}");
             return;
@@ -992,7 +1218,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"Sensor config updated\"}");
     });
     // Live sensor readings: raw ADC (current analogRead), smoothed ADC, and calibrated voltage
-    server->on("/sensors/readings", HTTP_GET, []() {
+    server->on("/api/sensors/readings", HTTP_GET, []() {
         int n = getNumVoltageSensors();
         const int ads_channels = 2; // currently reporting ADS1115 ch 0..1
         String fromUnit = "";
@@ -1000,6 +1226,15 @@ void setupWebServer(int port /*= 80*/) {
     JsonDocument doc;
         // Add normalized ISO timestamp using time_sync helper
         doc["timestamp"] = getIsoTimestamp();
+        // Add network / IP details so clients can correlate readings with current network state
+        {
+            JsonObject net = doc["network"].to<JsonObject>();
+            net["connected"] = isWifiConnected() ? 1 : 0;
+            net["ip"] = isWifiConnected() ? WiFi.localIP().toString() : String("");
+            net["gateway"] = isWifiConnected() ? WiFi.gatewayIP().toString() : String("");
+            net["mac"] = WiFi.macAddress();
+            net["rssi"] = isWifiConnected() ? WiFi.RSSI() : 0;
+        }
         // Expose the RTU at top-level and create a flat `tags` array of sensor objects
         String rtuId = String(getChipId());
         doc["rtu"] = rtuId;
@@ -1010,13 +1245,13 @@ void setupWebServer(int port /*= 80*/) {
             int pin = getVoltageSensorPin(i);
             int raw = analogRead(pin);
             float smoothed = getSmoothedADC(i);
-            float calibrated = getSmoothedVoltagePressure(i);
             // Prefer averaged values from sample store for API/read responses
             float avgRawF, avgSmoothedF, avgVoltF;
             if (getAverages(i, avgRawF, avgSmoothedF, avgVoltF)) {
                 raw = (int)round(avgRawF);
                 smoothed = avgSmoothedF;
-                calibrated = avgVoltF;
+                // Note: sample_store stores 'volt' as the calibrated pressure for historical reasons;
+                // we will compute pressure_from_smoothed explicitly below to avoid ambiguity.
             }
             int raw_original = raw;
             int raw_effective = raw;
@@ -1025,8 +1260,10 @@ void setupWebServer(int port /*= 80*/) {
             float voltage_smoothed_v = convert010V(round(smoothed));
             struct SensorCalibration cal = getCalibrationForPin(i);
             float pressure_from_raw = (raw_effective * cal.scale) + cal.offset;
+            // Always compute pressure from the smoothed ADC value (filtered) for consistency
             float pressure_from_smoothed = (round(smoothed) * cal.scale) + cal.offset;
-
+            // Use the pressure_from_smoothed as the authoritative converted.value
+            float pressure_final = pressure_from_smoothed;
             JsonObject s = tags.add<JsonObject>();
             s["id"] = String("AI") + String(i + 1);
             s["port"] = pin;
@@ -1038,16 +1275,29 @@ void setupWebServer(int port /*= 80*/) {
             // `raw` is the true raw ADC value (murni)
             val["raw"] = raw;
             val["filtered"] = smoothed;
-            // ADC: measurement not included; keep scaled/converted only
+            // ADC: include scaled forms for raw and filtered (voltages) as well as the primary scaled value
             JsonObject scaled = val["scaled"].to<JsonObject>();
+            // scaled.raw := voltage derived from the raw ADC reading
+            scaled["raw"] = roundToDecimals(convert010V(raw), 3);
+            // scaled.filtered := voltage derived from the smoothed ADC reading
+            scaled["filtered"] = roundToDecimals(voltage_smoothed_v, 3);
+            // primary displayed scaled value (kept for backwards compatibility)
             scaled["value"] = roundToDecimals(voltage_smoothed_v, 2);
             scaled["unit"] = "volt";
             JsonObject conv = val["converted"].to<JsonObject>();
-            conv["value"] = roundToDecimals(calibrated, 2);
+            conv["value"] = roundToDecimals(pressure_final, 2);
             conv["unit"] = "bar";
             conv["semantic"] = "pressure";
-            conv["from_raw"] = roundToDecimals(pressure_from_raw, 2);
-            conv["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
+            conv["raw"] = roundToDecimals(pressure_from_raw, 2);
+            conv["filtered"] = roundToDecimals(pressure_from_smoothed, 2);
+
+            // Audit fields: compare measured voltage with expected voltage derived from calibrated pressure
+            JsonObject audit = val["audit"].to<JsonObject>();
+            float measured_voltage_v = voltage_smoothed_v;
+            float expected_voltage_v = (pressure_final / DEFAULT_RANGE_BAR) * 10.0f; // expected 0..10V mapping
+            audit["measured_voltage_v"] = roundToDecimals(measured_voltage_v, 3);
+            audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_v, 3);
+            audit["voltage_delta_v"] = roundToDecimals(measured_voltage_v - expected_voltage_v, 3);
 
             JsonObject meta = s["meta"].to<JsonObject>();
             meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
@@ -1079,8 +1329,15 @@ void setupWebServer(int port /*= 80*/) {
             JsonObject val = s["value"].to<JsonObject>();
             // `raw` is the true raw ADS value
             val["raw"] = raw;
+            // Provide a filtered measurement for ADS channels (smoothed voltage derived from smoothed mA)
+            float ma_smoothed = getAdsSmoothedMa(ch);
+            float mv_from_smoothed = ma_smoothed * tp_scale;
+            float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
+            val["filtered"] = roundToDecimals(voltage_from_smoothed, 3);
             // ADS: move measurement into meta for ADS channels
             JsonObject scaled = val["scaled"].to<JsonObject>();
+            scaled["raw"] = roundToDecimals(mv / 1000.0f, 3);
+            scaled["filtered"] = roundToDecimals(voltage_from_smoothed, 3);
             scaled["value"] = roundToDecimals(mv / 1000.0f, 2);
             scaled["unit"] = "volt";
             JsonObject convA = val["converted"].to<JsonObject>();
@@ -1089,13 +1346,17 @@ void setupWebServer(int port /*= 80*/) {
             convA["semantic"] = "pressure";
             convA["note"] = "TP5551 derived";
             // Provide from_raw and from_filtered (smoothed) converted pressure for ADS
-            convA["from_raw"] = roundToDecimals(pressure_bar, 2);
-            float ma_smoothed = getAdsSmoothedMa(ch);
-            float mv_from_smoothed = ma_smoothed * tp_scale;
-            float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
+            convA["raw"] = roundToDecimals(pressure_bar, 2);
             float pressure_from_smoothed = (voltage_from_smoothed / 10.0f) * DEFAULT_RANGE_BAR;
-            convA["from_filtered"] = roundToDecimals(pressure_from_smoothed, 2);
+            convA["filtered"] = roundToDecimals(pressure_from_smoothed, 2);
 
+            // Audit fields for ADS channel: measured mv vs expected mv from converted pressure
+            JsonObject audit = val["audit"].to<JsonObject>();
+            float measured_voltage_ads_v = mv / 1000.0f;
+            float expected_voltage_ads_v = (convA["value"].is<float>() ? convA["value"].as<float>() : (float)convA["value"].as<int>()) / DEFAULT_RANGE_BAR * 10.0f;
+            audit["measured_voltage_v"] = roundToDecimals(measured_voltage_ads_v, 3);
+            audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_ads_v, 3);
+            audit["voltage_delta_v"] = roundToDecimals(measured_voltage_ads_v - expected_voltage_ads_v, 3);
             JsonObject meta = s["meta"].to<JsonObject>();
             JsonObject meta_meas = meta["measurement"].to<JsonObject>();
             meta_meas["mv"] = mv;
@@ -1104,7 +1365,7 @@ void setupWebServer(int port /*= 80*/) {
             meta["tp_scale_mv_per_ma"] = tp_scale;
             // Also expose tp_scale as a calibration value under cal_* for consistency
             meta["cal_tp_scale_mv_per_ma"] = tp_scale;
-            meta["ma_smoothed"] = getAdsSmoothedMa(ch);
+            meta["ma_smoothed"] = ma_smoothed;
             meta["depth_mm"] = depth_mm;
         }
 
@@ -1117,7 +1378,7 @@ void setupWebServer(int port /*= 80*/) {
     });
 
     // Notification config endpoints
-    server->on("/notifications/config", HTTP_GET, []() {
+    server->on("/api/notifications/config", HTTP_GET, []() {
     int mode = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
     int payload = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);    
     JsonDocument doc;
@@ -1128,7 +1389,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    server->on("/notifications/config", HTTP_POST, []() {
+    server->on("/api/notifications/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
     String body = server->arg("plain");
     JsonDocument doc;
@@ -1147,7 +1408,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"Notification config updated\"}");
     });
     // ADS channel configuration endpoints: view and set per-channel shunt and amp gain
-    server->on("/ads/config", HTTP_GET, []() {
+    server->on("/api/ads/config", HTTP_GET, []() {
     JsonDocument doc;
         JsonArray arr = doc["channels"].to<JsonArray>();
         for (int ch = 0; ch <= 1; ++ch) {
@@ -1170,7 +1431,7 @@ void setupWebServer(int port /*= 80*/) {
     });
 
     // Accept PUT as well as POST for /ads/config so client PUTs are supported
-    server->on("/ads/config", HTTP_PUT, []() {
+    server->on("/api/ads/config", HTTP_PUT, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1217,7 +1478,7 @@ void setupWebServer(int port /*= 80*/) {
     });
 
     // ADC smoothing/runtime sample-store configuration
-    server->on("/adc/config", HTTP_GET, []() {
+    server->on("/api/adc/config", HTTP_GET, []() {
     JsonDocument doc;
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
@@ -1226,7 +1487,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    server->on("/adc/config", HTTP_POST, []() {
+    server->on("/api/adc/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1247,17 +1508,51 @@ void setupWebServer(int port /*= 80*/) {
             saveIntToNVSns("adc_cfg", "samples_per_sensor", sp);
             changed = true;
         }
+    if (!doc["divider_mv"].isNull()) {
+            float dv = doc["divider_mv"].is<float>() ? doc["divider_mv"].as<float>() : (float)doc["divider_mv"].as<int>();
+            if (dv > 0.0f) {
+                saveFloatToNVSns("adc_cfg", "divider_mv", dv);
+                changed = true;
+            }
+        }
         if (changed) sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"ADC config updated\"}");
         else sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"No supported keys provided\"}");
     });
 
-    // Ensure explicit OPTIONS preflight handler for /ads/config
-    server->on("/ads/config", HTTP_OPTIONS, []() {
+    // Reseed ADC smoothed values and clear in-memory sample buffers without reboot
+    server->on("/api/adc/reseed", HTTP_POST, []() {
+        // Clear persisted sample buffers and runtime buffers
+        clearSampleStore();
+        // Re-initialize smoothed ADCs by reseeding from current ADC readings
+        setupVoltagePressureSensor();
+        sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"ADC smoothed values reseeded and sample buffers cleared\"}");
+    });
+
+    // Ensure OPTIONS preflight supported for /adc/reseed
+    server->on("/api/adc/reseed", HTTP_OPTIONS, []() {
         setCorsHeaders();
         sendCorsJson(204, "text/plain", "");
     });
 
-    server->on("/ads/config", HTTP_POST, []() {
+    // Reseed ADS smoothing buffers (clear median/EMA) after calibration or tp_scale change
+    server->on("/api/ads/reseed", HTTP_POST, []() {
+        clearAdsBuffers();
+        sendCorsJson(200, "application/json", "{\"status\":\"success\", \"message\":\"ADS buffers cleared and reseeded\"}");
+    });
+
+    // OPTIONS preflight for /ads/reseed
+    server->on("/api/ads/reseed", HTTP_OPTIONS, []() {
+        setCorsHeaders();
+        sendCorsJson(204, "text/plain", "");
+    });
+
+    // Ensure explicit OPTIONS preflight handler for /ads/config
+    server->on("/api/ads/config", HTTP_OPTIONS, []() {
+        setCorsHeaders();
+        sendCorsJson(204, "text/plain", "");
+    });
+
+    server->on("/api/ads/config", HTTP_POST, []() {
         if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1300,7 +1595,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"ADS config saved\"}");
     });
     // Trigger notification(s) on demand: POST body may include { "sensor_index": int } or { "pin": int } (accepts legacy "pin_number" too)
-    server->on("/notifications/trigger", HTTP_POST, []() {
+    server->on("/api/notifications/trigger", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1369,7 +1664,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"Batch notification triggered\"}");
     });
     // Time config: allow enabling/disabling RTC while keeping NTP
-    server->on("/time/config", HTTP_GET, []() {
+    server->on("/api/time/config", HTTP_GET, []() {
         bool rtcEnabled = getRtcEnabled();
     JsonDocument doc;
         doc["rtc_enabled"] = rtcEnabled ? 1 : 0;
@@ -1378,7 +1673,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    server->on("/time/config", HTTP_POST, []() {
+    server->on("/api/time/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1397,7 +1692,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", "{\"status\":\"success\",\"message\":\"Time config updated\"}");
     });
     // SD config: enable/disable SD logging while keeping webhook notifications
-    server->on("/sd/config", HTTP_GET, []() {
+    server->on("/api/sd/config", HTTP_GET, []() {
     bool sd = getSdEnabled();
     JsonDocument doc;
     doc["sd_enabled"] = sd ? 1 : 0;
@@ -1406,7 +1701,7 @@ void setupWebServer(int port /*= 80*/) {
         sendCorsJson(200, "application/json", resp);
     });
 
-    server->on("/sd/config", HTTP_POST, []() {
+    server->on("/api/sd/config", HTTP_POST, []() {
     if (!server->hasArg("plain")) { sendCorsJson(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing body\"}"); return; }
         String body = server->arg("plain");
     JsonDocument doc;
@@ -1433,23 +1728,21 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/swagger/", HTTP_GET, []() {
         // Serve /docs/index.html from SD
         if (!sdReady) { sendCorsJson(404, "text/plain", "SD not available"); return; }
-        if (!SD.exists("/docs/index.html")) { sendCorsJson(404, "text/plain", "swagger index not found on SD"); return; }
-        File f = SD.open("/docs/index.html", FILE_READ);
-        if (!f) { sendCorsJson(500, "text/plain", "Failed to open file"); return; }
-        setCorsHeaders();
-        server->streamFile(f, "text/html");
-        f.close();
+        if (!SD.exists("/docs/index.html") && !SD.exists("/docs/redoc.html") ) { sendCorsJson(404, "text/plain", "swagger index not found on SD"); return; }
+        // Prefer a bundled Redoc if present; otherwise serve index.html
+        if (SD.exists("/docs/redoc.html") || SD.exists("/docs/redoc.html.gz") ) {
+            if (streamSdFileWithGzip(String("/docs/redoc.html"), "text/html")) return;
+        }
+        if (streamSdFileWithGzip(String("/docs/index.html"), "text/html")) return;
+        sendCorsJson(500, "text/plain", "Failed to stream swagger index/redoc");
     });
 
     // Serve the OpenAPI YAML from SD at /swagger/openapi.yaml
     server->on("/swagger/openapi.yaml", HTTP_GET, []() {
     if (!sdReady) { sendCorsJson(404, "text/plain", "SD not available"); return; }
-    if (!SD.exists("/docs/openapi.yaml")) { sendCorsJson(404, "text/plain", "openapi.yaml not found on SD"); return; }
-    File f = SD.open("/docs/openapi.yaml", FILE_READ);
-        if (!f) { sendCorsJson(500, "text/plain", "Failed to open openapi.yaml"); return; }
-        setCorsHeaders();
-        server->streamFile(f, "application/x-yaml");
-        f.close();
+    if (!SD.exists("/docs/openapi.yaml") && !SD.exists("/docs/openapi.yaml.gz")) { sendCorsJson(404, "text/plain", "openapi.yaml not found on SD"); return; }
+    if (streamSdFileWithGzip(String("/docs/openapi.yaml"), "application/x-yaml")) return;
+    sendCorsJson(500, "text/plain", "Failed to stream openapi.yaml");
     });
     server->begin();
     webServerPort = port;
@@ -1464,18 +1757,13 @@ void handleTime();
 void handleTime() {
     JsonDocument doc;
     time_t sysEpoch = time(nullptr);
-    char isoBuf[32];
-    struct tm *tm_sys = gmtime(&sysEpoch);
-    strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_sys);
     doc["system_epoch"] = (unsigned long)sysEpoch;
-    doc["system_iso"] = String(isoBuf);
+    doc["system_iso"] = formatIsoWithTz(sysEpoch);
 
     if (isRtcPresent()) {
         time_t rtcEpoch = getRtcEpoch();
-        struct tm *tm_rtc = gmtime(&rtcEpoch);
-        strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tm_rtc);
         doc["rtc_epoch"] = (unsigned long)rtcEpoch;
-        doc["rtc_iso"] = String(isoBuf);
+        doc["rtc_iso"] = formatIsoWithTz(rtcEpoch);
     } else {
         doc["rtc_epoch"] = 0;
         doc["rtc_iso"] = "";

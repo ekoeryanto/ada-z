@@ -39,3 +39,6 @@ enum AdsChannelMode {
 
 int getAdsChannelMode(uint8_t channel);
 float getAdsTpScale(uint8_t channel);
+
+// Clear ADS per-channel buffers and reset smoothed values (useful after tp_scale changes)
+void clearAdsBuffers();

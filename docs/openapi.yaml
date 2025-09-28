@@ -761,6 +761,424 @@ paths:
         '200':
           description: Cleared
 
+  /sd/pending_notifications:
+    get:
+      summary: Get pending SD-stored notifications metadata and optional content
+      parameters:
+        - in: query
+          name: include
+          schema:
+            type: integer
+          description: Include content (1) or not (0)
+        - in: query
+          name: lines
+          schema:
+            type: integer
+          description: Number of trailing lines to include when content is requested
+      responses:
+        '200':
+          description: Pending notifications metadata (and optional content)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sd_enabled:
+                    type: integer
+                  sd_card_found:
+                    type: integer
+                  pending_count:
+                    type: integer
+                  file_size:
+                    type: integer
+                  content:
+                    type: string
+
+  /sd/pending_notifications/clear:
+    post:
+      summary: Clear pending SD-stored notifications
+      responses:
+        '200':
+          description: Cleared pending notifications
+
+  # --- API-prefixed endpoints implemented in firmware (mirrors /api/* handlers) ---
+  /api/config:
+    get:
+      summary: Get current configuration (API-prefixed)
+      responses:
+        '200':
+          description: Current configuration
+    post:
+      summary: Update configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                http_notification_url:
+                  type: string
+                api_key:
+                  type: string
+      responses:
+        '200':
+          description: Acknowledged
+
+  /api/time/sync:
+    post:
+      summary: Trigger immediate NTP sync (API-prefixed)
+      responses:
+        '200':
+          description: Sync triggered
+
+  /api/time/status:
+    get:
+      summary: Get current time/RTC status (API-prefixed)
+      responses:
+        '200':
+          description: Time and RTC status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rtc_found:
+                    type: integer
+                  rtc_lost_power:
+                    type: integer
+                  rtc_epoch:
+                    type: integer
+                  rtc_iso:
+                    type: string
+                  system_epoch:
+                    type: integer
+                  system_iso:
+                    type: string
+                  last_ntp_epoch:
+                    type: integer
+                  last_ntp_iso:
+                    type: string
+                  pending_rtc_sync:
+                    type: integer
+
+  /api/diagnostics/network:
+    get:
+      summary: Network diagnostics and WiFi status
+      responses:
+        '200':
+          description: Diagnostics info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: integer
+                  status:
+                    type: integer
+                  ssid:
+                    type: string
+                  rssi:
+                    type: integer
+                  ip:
+                    type: string
+                  last_disconnect_ms:
+                    type: integer
+                  last_disconnect_reason:
+                    type: integer
+                  last_disconnect_reason_str:
+                    type: string
+
+  /api/tag:
+    get:
+      summary: Read a sensor by tag (API-prefixed)
+      parameters:
+        - in: query
+          name: tag
+          schema:
+            type: string
+          description: Tag name (e.g. AI1)
+        - in: query
+          name: sampling
+          schema:
+            type: integer
+          description: Number of samples to average (optional)
+      responses:
+        '200':
+          description: Sensor reading for tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorReading'
+
+  /api/tag/{tag}:
+    get:
+      summary: Read a sensor by path tag (API-prefixed)
+      parameters:
+        - in: path
+          name: tag
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sensor reading for tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorReading'
+
+  /api/update:
+    post:
+      summary: OTA firmware update (multipart/form-data upload) (API-prefixed)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Update accepted
+        '401':
+          description: Unauthorized (API key missing or invalid)
+        '500':
+          description: Update failed
+
+  /api/update/status:
+    get:
+      summary: Check last OTA upload status (informational)
+      responses:
+        '200':
+          description: OTA status
+
+  /api/time/rtc:
+    get:
+      summary: Get RTC info (API-compatible)
+      responses:
+        '200':
+          description: RTC status
+    post:
+      summary: Set RTC (from_system or ISO string) (API-compatible)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from_system:
+                  type: boolean
+                iso:
+                  type: string
+      responses:
+        '200':
+          description: RTC updated
+
+  /api/calibrate/pin:
+    post:
+      summary: Single-pin calibration (non-blocking, API)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin:
+                  type: integer
+                value:
+                  type: number
+                target:
+                  type: number
+                samples:
+                  type: integer
+      responses:
+        '200':
+          description: Calibration applied
+
+  /api/calibrate/default:
+    post:
+      summary: Apply default calibration to all sensors (API-prefixed)
+      responses:
+        '200':
+          description: Default calibration applied
+
+  /api/calibrate/default/pin:
+    post:
+      summary: Apply default calibration to a single pin (API-prefixed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin:
+                  type: integer
+                tag:
+                  type: string
+      responses:
+        '200':
+          description: Default calibration applied to pin
+
+  /api/adc/calibrate/pin:
+    post:
+      summary: ADC-prefixed pin calibration (API alias)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensorConfigUpdate'
+      responses:
+        '200':
+          description: Calibration saved
+
+  /api/adc/calibrate/auto:
+    post:
+      summary: Auto-calibrate ADC sensors using smoothed readings (API)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                sensors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pin:
+                        type: integer
+                      target:
+                        type: number
+                samples:
+                  type: integer
+      responses:
+        '200':
+          description: Auto calibration applied
+
+  /api/calibrate/auto:
+    post:
+      summary: Auto-calibrate all ADC sensors using smoothed readings (API)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                sensors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pin:
+                        type: integer
+                      target:
+                        type: number
+                samples:
+                  type: integer
+      responses:
+        '200':
+          description: Auto calibration applied
+
+  /api/ads/calibrate/auto:
+    post:
+      summary: Auto-calibrate ADS channels (TP5551 scaling) (API)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: number
+                channels:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      channel:
+                        type: integer
+                      target:
+                        type: number
+      responses:
+        '200':
+          description: ADS calibration applied
+
+  /api/calibrate:
+    post:
+      summary: Calibrate endpoint (API alias to non-API handler)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calibration'
+      responses:
+        '200':
+          description: Calibration saved
+
+  /api/calibrate/all:
+    get:
+      summary: Return calibration for all configured sensors (API-prefixed)
+      responses:
+        '200':
+          description: All calibrations
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/Calibration'
+
+  /api/sensors/config:
+    get:
+      summary: Get sensors runtime config (API-prefixed)
+      responses:
+        '200':
+          description: Sensors config
+    post:
+      summary: Update sensors config (API-prefixed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sensors:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SensorConfigUpdate'
+      responses:
+        '200':
+          description: Updated
+
+  /api/sensors/readings:
+    get:
+      summary: Live sensor readings (API-prefixed)
+      responses:
+        '200':
+          description: Sensor readings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorReadingsResponse'
+
 components:
   schemas:
     Calibration:
@@ -814,9 +1232,22 @@ components:
       properties:
         timestamp:
           type: string
-          description: ISO datetime (when RTC present) or epoch string
+          description: ISO8601 datetime with timezone offset (e.g. 2025-09-28T14:13:28+07:00)
         rtu:
           type: string
+        network:
+          type: object
+          properties:
+            connected:
+              type: integer
+            ip:
+              type: string
+            gateway:
+              type: string
+            mac:
+              type: string
+            rssi:
+              type: integer
         tags:
           type: array
           items:
@@ -861,6 +1292,12 @@ components:
     ScaledObj:
       type: object
       properties:
+        raw:
+          type: number
+          description: Voltage derived from raw measurement (volts)
+        filtered:
+          type: number
+          description: Voltage derived from filtered/smoothed measurement (volts)
         value:
           type: number
         unit:
@@ -875,16 +1312,19 @@ components:
           type: string
         semantic:
           type: string
-        from_raw:
+        raw:
           type: number
-        from_filtered:
+        filtered:
           type: number
+        note:
+          type: string
 
     NotificationPayload:
       type: object
       properties:
         timestamp:
           type: string
+          description: ISO8601 datetime with timezone offset (matches /api/sensors/readings timestamp)
         rtu:
           type: string
         tags:
@@ -894,7 +1334,7 @@ components:
         tags_total:
           type: integer
       example:
-        timestamp: "2025-09-23T12:34:56"
+        timestamp: "2025-09-23T12:34:56+07:00"
         rtu: "press-32"
         tags_total: 1
 

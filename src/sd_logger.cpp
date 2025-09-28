@@ -99,6 +99,53 @@ bool flushPendingNotifications() {
     return ok;
 }
 
+String readPendingNotifications(int maxLines) {
+    if (!sdCardFound) return String();
+    File f = SD.open("/pending_notifications.jsonl", FILE_READ);
+    if (!f) return String();
+
+    String out;
+    int lines = 0;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        if (line.length() == 0) continue;
+        out += line + "\n";
+        lines++;
+        if (maxLines >= 0 && lines >= maxLines) break;
+    }
+    f.close();
+    return out;
+}
+
+bool clearPendingNotifications() {
+    if (!sdCardFound) return false;
+    if (!SD.exists("/pending_notifications.jsonl")) return true;
+    return SD.remove("/pending_notifications.jsonl");
+}
+
+size_t countPendingNotifications() {
+    if (!sdCardFound) return 0;
+    File f = SD.open("/pending_notifications.jsonl", FILE_READ);
+    if (!f) return 0;
+    size_t count = 0;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        if (line.length() == 0) continue;
+        count++;
+    }
+    f.close();
+    return count;
+}
+
+size_t pendingNotificationsFileSize() {
+    if (!sdCardFound) return 0;
+    File f = SD.open("/pending_notifications.jsonl", FILE_READ);
+    if (!f) return 0;
+    size_t sz = f.size();
+    f.close();
+    return sz;
+}
+
 // Append an error message with timestamp to /error.log
 #include "time_sync.h"
 void logErrorToSd(const String &msg) {
@@ -154,4 +201,3 @@ bool getSdEnabled() {
     sdEnabled = loadBoolFromNVSns("sd", PREF_SD_ENABLED, DEFAULT_SD_ENABLED != 0);
     return sdEnabled;
 }
-
