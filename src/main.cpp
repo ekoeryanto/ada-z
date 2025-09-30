@@ -25,8 +25,10 @@
 #include "sensors_config.h"
 #include "current_pressure_sensor.h"
 #include "device_id.h"
+#include "modbus_manager.h"
 
 #include "nvs_flash.h"
+#include "nvs_defaults.h"
 
 // Globals
 
@@ -72,6 +74,9 @@ void setup() {
         String msg = String("NVS init failed: 0x") + String((int)nvs_err, HEX);
         logErrorToSd(msg);
     }
+
+    // Ensure default NVS keys exist to avoid Preferences NOT_FOUND spam
+    ensureNvsDefaults();
 
     // Initialize ADS1115 for water pressure current sensors on A0/A1 (raw readings, no smoothing)
     if (!setupCurrentPressureSensor(ADS1115_ADDR)) {
@@ -141,6 +146,8 @@ void setup() {
     Serial.println(WiFi.localIP());
     // Start HTTP API server
     setupWebServer();
+
+    setupModbus();
 }
 
 // --- Sensors runtime + persistence API (exposed via sensors_config.h) ---
@@ -189,6 +196,7 @@ void loop() {
     
 
     loopTimeSync();
+    loopModbus();
 
     // Non-blocking sensor reading and logging
     unsigned long currentMillis = millis();

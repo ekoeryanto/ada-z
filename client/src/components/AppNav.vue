@@ -34,5 +34,6 @@ const route = useRoute();
 const links = [
   { to: '/', label: 'Dashboard', icon: 'mdi:view-dashboard-outline' },
   { to: '/tags', label: 'Tag Directory', icon: 'mdi:tag-text-outline' },
+  { to: '/modbus', label: 'Modbus', icon: 'mdi:serial-port' },
 ];
 </script>

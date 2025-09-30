@@ -1,0 +1,63 @@
+/*
+ * Sample sketch for polling A01ANYUB V2 RS485 ultrasonic sensors.
+ * Two sensors are wired on the same 9600bps Modbus RTU bus with addresses 201 and 202.
+ *
+ * Wiring (ESP32):
+ *   RX2 16  -> RS485 RO
+ *   TX2 17  -> RS485 DI
+ *   DE  4   -> RS485 DE/RE
+ *   VCC/GND accordingly.
+ */
+
+#include <ModbusMaster.h>
+
+constexpr uint8_t RS485_DE_PIN = 4;
+constexpr uint32_t MODBUS_BAUD = 9600;
+
+constexpr uint16_t REG_DISTANCE = 0x0001;     // distance in millimetres
+constexpr uint16_t REG_TEMPERATURE = 0x0002;  // temperature in 0.1°C
+constexpr uint16_t REG_SIGNAL = 0x0003;       // signal strength
+constexpr uint8_t REG_COUNT = 3;
+
+HardwareSerial& rs485 = Serial2;
+ModbusMaster node;
+
+void preTransmission() {
+  digitalWrite(RS485_DE_PIN, HIGH);
+  delayMicroseconds(10);
+}
+
+void postTransmission() {
+  delayMicroseconds(10);
+  digitalWrite(RS485_DE_PIN, LOW);
+}
+
+void dumpSensor(uint8_t address) {
+  node.begin(address, rs485);
+  uint8_t result = node.readHoldingRegisters(REG_DISTANCE, REG_COUNT);
+  if (result == node.ku8MBSuccess) {
+    uint16_t dist = node.getResponseBuffer(0);
+    uint16_t tempRaw = node.getResponseBuffer(1);
+    uint16_t sig = node.getResponseBuffer(2);
+    Serial.printf("Modbus %u -> distance=%umm temperature=%.1fC signal=%u\n",
+                  address, dist, tempRaw / 10.0f, sig);
+  } else {
+    Serial.printf("Modbus %u read error: 0x%02X\n", address, result);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(RS485_DE_PIN, OUTPUT);
+  digitalWrite(RS485_DE_PIN, LOW);
+
+  rs485.begin(MODBUS_BAUD, SERIAL_8N1, 16, 17);
+  node.preTransmission(preTransmission);
+  node.postTransmission(postTransmission);
+}
+
+void loop() {
+  dumpSensor(201);
+  dumpSensor(202);
+  delay(1000);
+}

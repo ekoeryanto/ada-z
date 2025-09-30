@@ -1,3 +1,4 @@
+// ...existing code...
 #include "web_api.h"
 #include "config.h" // For HTTP_NOTIFICATION_URL, etc.
 #include <ESPAsyncWebServer.h>
@@ -14,6 +15,7 @@
 #include "device_id.h"
 #include "sample_store.h"
 #include "wifi_manager_module.h"
+#include "modbus_manager.h"
 #include <ArduinoJson.h>
 #include "storage_helpers.h"
 #include "json_helper.h"
@@ -28,6 +30,7 @@
 #include <vector>
 #include <math.h>
 #include <pgmspace.h>
+#include "static_uploader.h"
 
 // ArduinoJson usage updated to recommended APIs
 // Use AsyncWebServer
@@ -291,6 +294,38 @@ static bool saveTagMetadataJson(const String &payload) {
     return written == payload.length();
 }
 
+static const char* MODBUS_CONFIG_PATH = "/modbus.json";
+
+static String loadModbusConfigJsonFromFile() {
+    if (sdReady && SD.exists(MODBUS_CONFIG_PATH)) {
+        File f = SD.open(MODBUS_CONFIG_PATH, FILE_READ);
+        if (f) {
+            String payload;
+            payload.reserve(f.size());
+            while (f.available()) {
+                payload += static_cast<char>(f.read());
+            }
+            f.close();
+            if (payload.length() > 0) {
+                return payload;
+            }
+        }
+    }
+    return getDefaultModbusConfigJson();
+}
+
+static bool saveModbusConfigJsonToFile(const String &payload) {
+    if (!sdReady) return false;
+    if (SD.exists(MODBUS_CONFIG_PATH)) {
+        SD.remove(MODBUS_CONFIG_PATH);
+    }
+    File f = SD.open(MODBUS_CONFIG_PATH, FILE_WRITE);
+    if (!f) return false;
+    size_t written = f.print(payload);
+    f.close();
+    return written == payload.length();
+}
+
 static const char* contentTypeFromPath(const String &path) {
     if (path.endsWith(".html")) return "text/html";
     if (path.endsWith(".htm")) return "text/html";
@@ -345,6 +380,7 @@ static bool streamSdFileWithGzip(AsyncWebServerRequest *request, const String &p
 static bool otaLastAuthRejected = false;
 static bool otaLastHadError = false;
 static bool otaLastSucceeded = false;
+static String otaLastError = String("");
 
 // Helper: set common CORS headers for responses
 void setCorsHeaders(AsyncWebServerResponse *response) {
@@ -842,12 +878,10 @@ void setupWebServer(int port /*= 80*/) {
         Serial.println("SD not available at startup; static assets will fallback to minimal responses");
     }
 
-    // Static web client at root
-    server->on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (streamSdFileWithGzip(request, String("/www/index.html"))) return;
-        request->send(200, "text/html",
-            "<html><body><h1>press-32</h1><p>Web client not found. Upload web client files to /www/ on the SD card.</p></body></html>");
-    });
+    String modbusConfig = loadModbusConfigJsonFromFile();
+    if (!applyModbusConfig(modbusConfig)) {
+        applyModbusConfig(getDefaultModbusConfigJson());
+    }
 
     server->on("/api/time/sync", HTTP_POST, [](AsyncWebServerRequest *request) {
         // Trigger immediate NTP sync and request RTC update if RTC present
@@ -926,6 +960,55 @@ void setupWebServer(int port /*= 80*/) {
         }
         sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Tag metadata saved\"}");
     });
+
+    server->on("/api/modbus/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String payload = getModbusConfigJson();
+        sendCorsJson(request, 200, "application/json", payload);
+    });
+
+    // (modbus debug endpoint removed)
+
+    auto *modbusConfigHandler = new AsyncCallbackJsonWebHandler("/api/modbus/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        if (!json.is<JsonObject>()) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+            return;
+        }
+
+        String incoming;
+        serializeJson(json, incoming);
+        if (!applyModbusConfig(incoming)) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid Modbus configuration\"}");
+            return;
+        }
+
+        bool persisted = false;
+        bool saveAttempted = false;
+        if (sdReady) {
+            saveAttempted = true;
+            persisted = saveModbusConfigJsonToFile(getModbusConfigJson());
+        }
+
+        JsonDocument resp;
+        resp["status"] = persisted ? "success" : (sdReady ? "warning" : "accepted");
+        resp["persisted"] = persisted ? 1 : 0;
+        if (!sdReady && !persisted) {
+            resp["message"] = "Configuration applied but SD card is not available";
+        } else if (sdReady && !persisted) {
+            resp["message"] = "Configuration applied but failed to persist to SD";
+        } else {
+            resp["message"] = "Modbus configuration updated";
+        }
+        if (!saveAttempted) {
+            resp["sd_ready"] = sdReady ? 1 : 0;
+        }
+        resp["config"] = json;
+
+        String response;
+        serializeJson(resp, response);
+        sendCorsJson(request, persisted ? 200 : 202, "application/json", response);
+    });
+    modbusConfigHandler->setMaxContentLength(4096);
+    server->addHandler(modbusConfigHandler);
 
     server->on("/api/diagnostics/network", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -1015,14 +1098,22 @@ void setupWebServer(int port /*= 80*/) {
     // Secure OTA update endpoint (multipart/form-data upload)
     server->on("/api/update", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (otaLastAuthRejected) {
-            sendCorsJson(request, 401, "application/json", "{\"status\":\"error\",\"message\":\"OTA authentication failed\"}");
+            String payload = String("{\"status\":\"error\",\"message\":\"OTA authentication failed\"}");
+            if (otaLastError.length() > 0) {
+                payload = String("{\"status\":\"error\",\"message\":\"OTA authentication failed\",\"error\":\"") + otaLastError + String("\"}");
+            }
+            sendCorsJson(request, 401, "application/json", payload);
         } else if (otaLastHadError || !otaLastSucceeded) {
-            sendCorsJson(request, 500, "application/json", "{\"status\":\"error\",\"message\":\"OTA update failed\"}");
+            String payload = String("{\"status\":\"error\",\"message\":\"OTA update failed\"}");
+            if (otaLastError.length() > 0) {
+                payload = String("{\"status\":\"error\",\"message\":\"OTA update failed\",\"error\":\"") + otaLastError + String("\"}");
+            }
+            sendCorsJson(request, 500, "application/json", payload);
         } else {
             AsyncResponseStream *response = request->beginResponseStream("application/json");
             response->setCode(200);
             setCorsHeaders(response);
-            response->print("{\"status\":\"ok\",\"message\":\"Update received (rebooting)\"}");
+            response->print("{\"status\":ok\",\"message\":\"Update received (rebooting)\"}");
             request->send(response);
             delay(100);
             ESP.restart();
@@ -1030,6 +1121,7 @@ void setupWebServer(int port /*= 80*/) {
         otaLastAuthRejected = false;
         otaLastHadError = false;
         otaLastSucceeded = false;
+        otaLastError = String("");
     });
 
     server->on(
@@ -1038,7 +1130,7 @@ void setupWebServer(int port /*= 80*/) {
         [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
         // upload handler called repeatedly during file upload
         // Check API key header on first chunk
-        static bool update_begun = false;
+        static bool update_begun;
         if (index == 0) { // UPLOAD_FILE_START
             bool auth_ok = false;
             update_begun = false;
@@ -1058,15 +1150,17 @@ void setupWebServer(int port /*= 80*/) {
             if (!auth_ok) {
                 Serial.println("Update aborted: auth failed");
                 otaLastAuthRejected = true;
+                otaLastError = String("auth_failed");
                 request->send(401);
                 return;
             }
 
             Serial.printf("Update: start, name: %s\n", filename.c_str());
-            size_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+            size_t maxSketchSpace = ESP.getFreeSketchSpace();
             if (!Update.begin(maxSketchSpace)) {
                 Update.printError(Serial);
                 otaLastHadError = true;
+                otaLastError = String("begin_failed");
             } else {
                 update_begun = true;
             }
@@ -1074,6 +1168,7 @@ void setupWebServer(int port /*= 80*/) {
             if (Update.write(data, len) != len) {
                 Update.printError(Serial);
                 otaLastHadError = true;
+                otaLastError = String("write_failed");
             }
         }
         if (final) { // UPLOAD_FILE_END
@@ -1084,11 +1179,91 @@ void setupWebServer(int port /*= 80*/) {
             } else {
                 Update.printError(Serial);
                 otaLastHadError = true;
+                otaLastError = String("end_failed");
             }
             }
             update_begun = false;
         }
     });
+
+    // Secure static site update endpoint: upload a tar archive (multipart/form-data field 'file')
+    // Authenticated via same API key in NVS (X-Api-Key or Authorization: Bearer <token>)
+    server->on(
+        "/api/static/update", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            // This final response is sent after the upload handler finishes and sets flags
+            AsyncResponseStream *response = request->beginResponseStream("application/json");
+            response->setCode(200);
+            setCorsHeaders(response);
+            response->print("{\"status\":\"ok\"}");
+            request->send(response);
+        },
+        [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            static File tmpTar;
+            static String tmpPath = "/tmp_static_upload.tar";
+            if (index == 0) {
+                // start: check auth
+                String expected = loadStringFromNVSns(PREF_NAMESPACE, "api_key", String(""));
+                String authHeader = request->hasHeader("Authorization") ? request->getHeader("Authorization")->value() : "";
+                String apiHeader = request->hasHeader("X-Api-Key") ? request->getHeader("X-Api-Key")->value() : "";
+                bool auth_ok = false;
+                if (authHeader.length() > 0 && authHeader.startsWith("Bearer ")) {
+                    String tok = authHeader.substring(7);
+                    if (tok == expected) auth_ok = true;
+                }
+                if (!auth_ok && apiHeader.length() > 0 && apiHeader == expected) auth_ok = true;
+                if (!auth_ok) {
+                    Serial.println("Static update: auth failed");
+                    request->send(401);
+                    return;
+                }
+                // remove any previous tmp file
+                if (SD.exists(tmpPath.c_str())) SD.remove(tmpPath.c_str());
+                tmpTar = SD.open(tmpPath.c_str(), FILE_WRITE);
+                if (!tmpTar) {
+                    Serial.println("Static update: cannot open tmp tar");
+                    request->send(500);
+                    return;
+                }
+            }
+            if (!tmpTar) return;
+            // write chunk
+            tmpTar.write(data, len);
+            if (final) {
+                tmpTar.close();
+                // extract to /www.tmp
+                String tmpDir = "/www.tmp";
+                if (SD.exists(tmpDir.c_str())) {
+                    removeDirRecursive(tmpDir);
+                }
+                SD.mkdir(tmpDir.c_str());
+                File t = SD.open(tmpPath.c_str(), FILE_READ);
+                if (!t) {
+                    Serial.println("Static update: failed open tmp tar for read");
+                    request->send(500);
+                    return;
+                }
+                bool ok = extractTarToDir(t, tmpDir);
+                t.close();
+                if (!ok) {
+                    Serial.println("Static update: tar extract failed");
+                    request->send(500);
+                    return;
+                }
+                // Swap directories atomically-ish
+                if (SD.exists("/www.old")) removeDirRecursive("/www.old");
+                if (SD.exists("/www")) {
+                    SD.rename("/www", "/www.old");
+                }
+                SD.rename(tmpDir.c_str(), "/www");
+                // cleanup
+                if (SD.exists(tmpPath.c_str())) SD.remove(tmpPath.c_str());
+                // optionally, remove /www.old
+                removeDirRecursive("/www.old");
+                Serial.println("Static update: success");
+            }
+        }
+    );
 
     // RTC read/set endpoints
     server->on("/api/time/rtc", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1105,6 +1280,18 @@ void setupWebServer(int port /*= 80*/) {
         String resp;
         serializeJson(doc, resp);
         sendCorsJson(request, 200, "application/json", resp);
+    });
+
+    // OTA status endpoint (informational)
+    server->on("/api/update/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        doc["auth_rejected"] = otaLastAuthRejected ? 1 : 0;
+        doc["had_error"] = otaLastHadError ? 1 : 0;
+        doc["succeeded"] = otaLastSucceeded ? 1 : 0;
+        doc["last_error"] = otaLastError;
+        String out;
+        serializeJson(doc, out);
+        sendCorsJson(request, 200, "application/json", out);
     });
 
     AsyncCallbackJsonWebHandler* rtcPostHandler = new AsyncCallbackJsonWebHandler("/api/time/rtc", [](AsyncWebServerRequest *request, JsonVariant &json) {
@@ -1815,6 +2002,46 @@ void setupWebServer(int port /*= 80*/) {
             meta["depth_mm"] = depth_mm;
         }
 
+        const auto &modbusSensors = getModbusSensors();
+        for (const auto &mb : modbusSensors) {
+            JsonObject s = tags.add<JsonObject>();
+            s["id"] = mb.id ? String(mb.id) : String("MB") + String(mb.address);
+            s["port"] = mb.address;
+            s["index"] = tags.size() - 1;
+            s["source"] = "modbus";
+            s["enabled"] = mb.online ? 1 : 0;
+
+            JsonObject val = s["value"].to<JsonObject>();
+            if (!isnan(mb.distance_mm)) {
+                val["raw"] = roundToDecimals(mb.distance_mm, 1);
+                val["filtered"] = roundToDecimals(mb.distance_mm, 1);
+            } else {
+                val["raw"] = nullptr;
+                val["filtered"] = nullptr;
+            }
+
+            JsonObject conv = val["converted"].to<JsonObject>();
+            if (!isnan(mb.distance_mm)) {
+                conv["value"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
+                conv["raw"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
+                conv["filtered"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
+            } else {
+                conv["value"] = nullptr;
+                conv["raw"] = nullptr;
+                conv["filtered"] = nullptr;
+            }
+            conv["unit"] = "m";
+            conv["semantic"] = "distance";
+
+            JsonObject meta = s["meta"].to<JsonObject>();
+            if (!isnan(mb.temperature_c)) {
+                meta["temperature_c"] = roundToDecimals(mb.temperature_c, 1);
+            }
+            meta["signal_strength"] = mb.signal_strength;
+            meta["last_error"] = mb.last_error;
+            meta["last_update_ms"] = (uint32_t)mb.last_update_ms;
+        }
+
     // tags_total is number of sensor entries returned in `tags`
     doc["tags_total"] = tags.size();
 
@@ -2093,18 +2320,20 @@ void setupWebServer(int port /*= 80*/) {
     sdConfigHandler->setMaxContentLength(128);
     server->addHandler(sdConfigHandler);
 
-    // Global OPTIONS handler for CORS preflight
-    server->onNotFound([](AsyncWebServerRequest *request) {
-        if (request->method() == HTTP_OPTIONS) {
-            AsyncWebServerResponse *response = request->beginResponse(204);
-            setCorsHeaders(response);
-            request->send(response);
-        } else {
-            String path = request->url();
-            if (streamSdFileWithGzip(request, String("/www") + path)) return;
-            sendCorsJson(request, 404, "application/json", "{\"status\":\"error\",\"message\":\"Not Found\"}");
-        }
+        // OTA space diagnostics endpoint
+    server->on("/api/update/space", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        doc["free_sketch_space"] = (uint32_t)ESP.getFreeSketchSpace();
+        doc["max_sketch_size"] = (uint32_t)ESP.getSketchSize();
+        String resp;
+        ArduinoJson::serializeJson(doc, resp);
+        sendCorsJson(request, 200, "application/json", resp);
     });
+
+    // Serve static files from the /www directory on the SD card.
+    // This will handle the web client (index.html, .js, .css) automatically.
+    // It should be the last handler added.
+    server->serveStatic("/", SD, "/www/").setDefaultFile("index.html");
 
     server->begin();
     webServerPort = port;
@@ -2135,7 +2364,7 @@ void handleTime(AsyncWebServerRequest *request) {
     doc["pending_rtc_sync"] = isPendingRtcSync();
 
     String response;
-        serializeJson(doc, response);
+    ArduinoJson::serializeJson(doc, response);
         sendCorsJson(request, 200, "application/json", response);
 }
 

@@ -72,3 +72,14 @@ export function saveTagMetadata(data) {
     body: JSON.stringify(data),
   });
 }
+
+export function fetchModbusConfig() {
+  return request('/modbus/config');
+}
+
+export function saveModbusConfig(config) {
+  return request('/modbus/config', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}

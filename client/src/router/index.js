@@ -11,6 +11,11 @@ const routes = [
     name: 'tags',
     component: () => import('../views/TagsView.vue'),
   },
+  {
+    path: '/modbus',
+    name: 'modbus',
+    component: () => import('../views/ModbusView.vue'),
+  },
 ];
 
 const router = createRouter({

@@ -99,93 +99,28 @@ const refreshTimer = ref(null);
 const deviceName = computed(() => systemInfo.value?.hostname || 'press-32');
 const deviceIp = computed(() => systemInfo.value?.ip || '');
 
-const adcOnline = computed(() =>
-  (readings.value?.tags || []).filter((tag) => tag.source === 'adc' && tag.enabled).length,
-);
-const adcTotal = computed(() => (readings.value?.tags || []).filter((tag) => tag.source === 'adc').length);
-const adsTotal = computed(() => (readings.value?.tags || []).filter((tag) => tag.source === 'ads1115').length);
-
-const averagePressureBar = computed(() => {
-  const sensors = (readings.value?.tags || []).filter(
-    (tag) => tag.source === 'adc' || tag.source === 'ads1115',
-  );
-  if (!sensors.length) return null;
-  const sum = sensors.reduce((acc, tag) => acc + (tag.value?.converted?.filtered ?? tag.value?.converted?.value ?? 0), 0);
-  return sum / sensors.length;
-});
-
-const wifiRssi = computed(() => systemInfo.value?.rssi ?? null);
-const wifiSsid = computed(() => systemInfo.value?.ssid ?? '');
-const wifiConnected = computed(() => !!systemInfo.value?.connected);
-
-const lastNtpIso = computed(() => timeStatus.value?.last_ntp_iso || systemInfo.value?.last_ntp_iso || null);
-
 const palette = ['text-sky-400', 'text-indigo-400', 'text-emerald-400', 'text-amber-400'];
 
-const lineOption = computed(() => {
-  const data = (readings.value?.tags || [])
-    .filter((tag) => tag.source === 'adc')
-    .map((tag) => ({
-      name: tag.id,
-      value: tag.value?.converted?.filtered ?? tag.value?.converted?.value ?? null,
-    }))
-    .filter((entry) => entry.value != null);
-
-  return {
-    tooltip: { trigger: 'axis' },
-    legend: { top: 0, textStyle: { color: '#94a3b8' } },
-    grid: { left: 40, right: 20, top: 40, bottom: 40 },
-    xAxis: {
-      type: 'category',
-      data: data.map((entry) => entry.name),
-      axisLine: { lineStyle: { color: '#334155' } },
-      axisLabel: { color: '#94a3b8' },
-    },
-    yAxis: {
-      type: 'value',
-      name: 'bar',
-      axisLine: { lineStyle: { color: '#334155' } },
-      splitLine: { lineStyle: { color: '#1e293b' } },
-      axisLabel: { color: '#94a3b8' },
-    },
-    series: [
-      {
-        name: 'Pressure',
-        type: 'line',
-        smooth: true,
-        data: data.map((entry) => Number(entry.value.toFixed(2))),
-        lineStyle: { color: '#38bdf8' },
-        itemStyle: { color: '#0ea5e9' },
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(14,165,233,0.35)' },
-              { offset: 1, color: 'rgba(14,165,233,0.05)' },
-            ],
-          },
-        },
-      },
-    ],
-  };
-});
-
 const gaugeCards = computed(() => {
-  // Include both ADC and ADS sensors so ADS channels also get gauge cards
-  const sensors = (readings.value?.tags || []).filter((tag) => tag.source === 'adc' || tag.source === 'ads1115');
+  const sensors = (readings.value?.tags || []).filter((tag) =>
+    tag.source === 'adc' || tag.source === 'ads1115' || tag.source === 'modbus',
+  );
+
   return sensors.map((sensor) => {
-    const isAds = sensor.source === 'ads1115';
-    const value = isAds
-      ? sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0
-      : sensor.value?.converted?.filtered ?? sensor.value?.converted?.value ?? 0;
+    const type = sensor.source;
+    const converted = sensor.value?.converted || {};
+    const value = Number( converted.filtered ?? converted.value ?? 0 );
+    const isModbus = type === 'modbus';
+    const unit = isModbus ? 'm' : 'bar';
+    const subtitle = isModbus ? 'Ultrasonik (RS485)' : type === 'ads1115' ? 'Current Loop (mA→bar)' : 'Tekanan';
+    const maxRange = isModbus
+      ? sensor.meta?.max_distance_m ?? 10
+      : 10;
+
     return {
       id: sensor.id,
       title: sensor.id,
-      subtitle: isAds ? 'Current Loop (mA->bar)' : 'Tekanan',
+      subtitle,
       option: {
         series: [
           {
@@ -193,7 +128,7 @@ const gaugeCards = computed(() => {
             startAngle: 210,
             endAngle: -30,
             min: 0,
-            max: 10,
+            max: maxRange,
             radius: '90%',
             axisLine: {
               lineStyle: {
@@ -214,7 +149,7 @@ const gaugeCards = computed(() => {
             detail: {
               fontSize: 24,
               valueAnimation: true,
-              formatter: `${value.toFixed(1)} bar`,
+              formatter: (val) => `${val.toFixed(isModbus ? 2 : 1)} ${unit}`,
               color: '#e2e8f0',
             },
             title: {
@@ -377,10 +312,11 @@ async function refreshData() {
 
 // After each refresh, update gauge histories for sparklines
 function updateGaugeHistories() {
-  const sensors = (readings.value?.tags || []).filter((t) => t.source === 'adc' || t.source === 'ads1115');
+  const sensors = (readings.value?.tags || []).filter((t) =>
+    t.source === 'adc' || t.source === 'ads1115' || t.source === 'modbus',
+  );
   sensors.forEach((s) => {
-    // For ADS, prefer converted.filtered (pressure derived from smoothed voltage)
-    const val = s.value?.converted?.filtered ?? s.value?.converted?.value ?? s.value?.scaled?.filtered ?? s.value?.scaled?.value ?? 0;
+    const val = s.value?.converted?.filtered ?? s.value?.converted?.value ?? 0;
     pushGaugeSample(s.id, val);
   });
 }
