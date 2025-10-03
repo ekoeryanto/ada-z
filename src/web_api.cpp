@@ -1156,33 +1156,43 @@ void setupWebServer(int port /*= 80*/) {
             }
 
             Serial.printf("Update: start, name: %s\n", filename.c_str());
-            size_t maxSketchSpace = ESP.getFreeSketchSpace();
-            if (!Update.begin(maxSketchSpace)) {
+            Serial.println("OTA Update: Starting...");
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
                 Update.printError(Serial);
                 otaLastHadError = true;
                 otaLastError = String("begin_failed");
+                Serial.println("OTA Update: Update.begin() failed.");
             } else {
                 update_begun = true;
+                Serial.println("OTA Update: Update.begin() succeeded.");
             }
-        } else if (update_begun && !otaLastHadError) { // UPLOAD_FILE_WRITE
+        }
+        
+        if (update_begun && !otaLastHadError && len > 0) {
+            Serial.printf("OTA Update: Writing chunk, size %d\n", len);
             if (Update.write(data, len) != len) {
                 Update.printError(Serial);
                 otaLastHadError = true;
                 otaLastError = String("write_failed");
+                Serial.println("OTA Update: Update.write() failed.");
             }
         }
         if (final) { // UPLOAD_FILE_END
+            Serial.println("OTA Update: Finalizing...");
             if (update_begun && !otaLastHadError) {
-            if (Update.end(true)) {
+                if (Update.end(true)) {
                     Serial.printf("Update Success: %u bytes\n", index + len);
-                otaLastSucceeded = true;
-            } else {
-                Update.printError(Serial);
-                otaLastHadError = true;
-                otaLastError = String("end_failed");
-            }
+                    otaLastSucceeded = true;
+                    Serial.println("OTA Update: Update.end() succeeded.");
+                } else {
+                    Update.printError(Serial);
+                    otaLastHadError = true;
+                    otaLastError = String("end_failed");
+                    Serial.println("OTA Update: Update.end() failed.");
+                }
             }
             update_begun = false;
+            Serial.println("OTA Update: Finished.");
         }
     });
 
@@ -1986,8 +1996,14 @@ void setupWebServer(int port /*= 80*/) {
             // Audit fields for ADS channel: measured mv vs expected mv from converted pressure
             JsonObject audit = val["audit"].to<JsonObject>();
             float measured_voltage_ads_v = mv / 1000.0f;
+            // compute expected voltage (V) derived from converted pressure value stored in convA
             float expected_voltage_ads_v = (convA["value"].is<float>() ? convA["value"].as<float>() : (float)convA["value"].as<int>()) / DEFAULT_RANGE_BAR * 10.0f;
+            audit["expected_voltage_ads_v"] = roundToDecimals(expected_voltage_ads_v, 3);
             audit["measured_voltage_v"] = roundToDecimals(measured_voltage_ads_v, 3);
+
+
+
+
             audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_ads_v, 3);
             audit["voltage_delta_v"] = roundToDecimals(measured_voltage_ads_v - expected_voltage_ads_v, 3);
             JsonObject meta = s["meta"].to<JsonObject>();
