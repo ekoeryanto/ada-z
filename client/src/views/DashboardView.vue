@@ -9,29 +9,6 @@
       @refresh="refreshData"
     />
 
-    <section class="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
-      <article
-        v-for="gauge in gaugeCards"
-        :key="gauge.id"
-        class="rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl shadow-slate-950/30 backdrop-blur"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm uppercase tracking-wide text-slate-400">{{ gauge.subtitle }}</p>
-            <h2 class="text-xl font-semibold text-white">{{ gauge.title }}</h2>
-          </div>
-        </div>
-        <div class="mt-6 h-60">
-          <VChart :option="gauge.option" autoresize class="h-full" />
-        </div>
-        <div class="mt-4 h-20">
-          <VChart :option="getSparklineOption(gauge.id)" autoresize class="h-full" />
-        </div>
-      </article>
-    </section>
-
-   
-
     <DashboardPanels
       title="Analog Inputs (0–10 V)"
       :sensors="adcPanels"
@@ -49,6 +26,18 @@
       v-if="adsPanels.length || loading"
       title="Current Loop (4–20 mA)"
       :sensors="adsPanels"
+      :loading="loading"
+      :error="error"
+    >
+      <template #actions="{ sensor }">
+        <span class="text-slate-400">{{ sensor.actionsLabel }}</span>
+      </template>
+    </DashboardPanels>
+
+    <DashboardPanels
+      v-if="modbusPanels.length || loading"
+      title="Modbus Sensors (RS485)"
+      :sensors="modbusPanels"
       :loading="loading"
       :error="error"
     >
@@ -101,99 +90,6 @@ const deviceIp = computed(() => systemInfo.value?.ip || '');
 
 const palette = ['text-sky-400', 'text-indigo-400', 'text-emerald-400', 'text-amber-400'];
 
-const gaugeCards = computed(() => {
-  const sensors = (readings.value?.tags || []).filter((tag) =>
-    tag.source === 'adc' || tag.source === 'ads1115' || tag.source === 'modbus',
-  );
-
-  return sensors.map((sensor) => {
-    const type = sensor.source;
-    const converted = sensor.value?.converted || {};
-    const value = Number( converted.filtered ?? converted.value ?? 0 );
-    const isModbus = type === 'modbus';
-    const unit = isModbus ? 'm' : 'bar';
-    const subtitle = isModbus ? 'Ultrasonik (RS485)' : type === 'ads1115' ? 'Current Loop (mA→bar)' : 'Tekanan';
-    const maxRange = isModbus
-      ? sensor.meta?.max_distance_m ?? 10
-      : 10;
-
-    return {
-      id: sensor.id,
-      title: sensor.id,
-      subtitle,
-      option: {
-        series: [
-          {
-            type: 'gauge',
-            startAngle: 210,
-            endAngle: -30,
-            min: 0,
-            max: maxRange,
-            radius: '90%',
-            axisLine: {
-              lineStyle: {
-                width: 10,
-                color: [
-                  [0.4, '#0ea5e9'],
-                  [0.7, '#38bdf8'],
-                  [1, '#f87171'],
-                ],
-              },
-            },
-            axisLabel: {
-              color: '#94a3b8',
-            },
-            pointer: {
-              itemStyle: { color: '#e2e8f0' },
-            },
-            detail: {
-              fontSize: 24,
-              valueAnimation: true,
-              formatter: (val) => `${val.toFixed(isModbus ? 2 : 1)} ${unit}`,
-              color: '#e2e8f0',
-            },
-            title: {
-              offsetCenter: [0, '70%'],
-              color: '#94a3b8',
-            },
-            data: [{ value, name: sensor.id }],
-          },
-        ],
-      },
-    };
-  });
-});
-
-// Small history buffer to hold last N samples per gauge for sparklines
-const historySize = 40;
-const gaugeHistory = new Map(); // id -> Array<number>
-
-function pushGaugeSample(id, value) {
-  if (!gaugeHistory.has(id)) gaugeHistory.set(id, []);
-  const buf = gaugeHistory.get(id);
-  buf.push(Number(value || 0));
-  if (buf.length > historySize) buf.shift();
-}
-
-function getSparklineOption(id) {
-  const data = (gaugeHistory.get(id) || []).slice();
-  return {
-    grid: { left: 4, right: 4, top: 6, bottom: 6 },
-    xAxis: { show: false, type: 'category', data: data.map((_, i) => i) },
-    yAxis: { show: false, type: 'value' },
-    series: [
-      {
-        type: 'line',
-        showSymbol: false,
-        smooth: true,
-        lineStyle: { color: '#60a5fa', width: 2 },
-        areaStyle: { color: 'rgba(96,165,250,0.12)' },
-        data: data,
-      },
-    ],
-  };
-}
-
 const adcPanels = computed(() => {
   const sensorReadings = (readings.value?.tags || []).filter((tag) => tag.source === 'adc');
   const tagConfigMap = new Map((config.value?.tags || []).map((tag) => [tag.id, tag]));
@@ -218,9 +114,13 @@ const adcPanels = computed(() => {
       online: !!sensor.enabled,
       metrics: [
         {
-          label: 'Pressure',
+          label: 'Pressure (filtered)',
           value: converted.filtered != null ? `${Number(converted.filtered).toFixed(2)} bar` : '—',
           emphasis: true,
+        },
+        {
+          label: 'Pressure (raw)',
+          value: converted.raw != null ? `${Number(converted.raw).toFixed(2)} bar` : '—',
         },
         {
           label: 'Voltage',
@@ -283,6 +183,44 @@ const adsPanels = computed(() => {
   });
 });
 
+const modbusPanels = computed(() => {
+  const sensors = (readings.value?.tags || []).filter((tag) => tag.source === 'modbus');
+  if (!sensors.length) return [];
+  return sensors.map((sensor, index) => {
+    const value = sensor.value || {};
+    const meta = sensor.meta || {};
+
+    return {
+      id: sensor.id,
+      label: `Modbus ${sensor.id}`,
+      icon: 'mdi:radar',
+      iconColor: 'text-teal-400',
+      online: sensor.enabled,
+      metrics: [
+        {
+          label: 'Distance (filtered)',
+          value: value.filtered != null ? `${Number(value.filtered).toFixed(0)} mm` : '—',
+          emphasis: true,
+        },
+        {
+          label: 'Distance (raw)',
+          value: value.raw != null ? `${Number(value.raw).toFixed(0)} mm` : '—',
+        },
+        {
+          label: 'Temperature',
+          value: meta.temperature_c != null ? `${Number(meta.temperature_c).toFixed(1)} °C` : '—',
+        },
+        {
+          label: 'Signal Strength',
+          value: meta.signal_strength != null ? meta.signal_strength : '—',
+        },
+      ],
+      actionsLabel: '',
+      connectionLabel: `Modbus Address ${sensor.port}`,
+    };
+  });
+});
+
 async function refreshData() {
   if (!loading.value) {
     refreshing.value = true;
@@ -300,25 +238,12 @@ async function refreshData() {
     config.value = cfg;
     readings.value = sensors;
     timeStatus.value = time;
-      // update per-gauge histories so sparkline shows newest point
-      updateGaugeHistories();
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     refreshing.value = false;
     loading.value = false;
   }
-}
-
-// After each refresh, update gauge histories for sparklines
-function updateGaugeHistories() {
-  const sensors = (readings.value?.tags || []).filter((t) =>
-    t.source === 'adc' || t.source === 'ads1115' || t.source === 'modbus',
-  );
-  sensors.forEach((s) => {
-    const val = s.value?.converted?.filtered ?? s.value?.converted?.value ?? 0;
-    pushGaugeSample(s.id, val);
-  });
 }
 
 async function handleSync() {
