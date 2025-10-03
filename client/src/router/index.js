@@ -16,6 +16,16 @@ const routes = [
     name: 'modbus',
     component: () => import('../views/ModbusView.vue'),
   },
+  {
+    path: '/notifications',
+    name: 'notifications',
+    component: () => import('../views/NotificationsView.vue'),
+  },
+  {
+    path: '/calibration',
+    name: 'calibration',
+    component: () => import('../views/CalibrationView.vue'),
+  },
 ];
 
 const router = createRouter({

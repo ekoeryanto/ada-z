@@ -83,3 +83,57 @@ export function saveModbusConfig(config) {
     body: JSON.stringify(config),
   });
 }
+
+export function getNotificationsConfig() {
+  return request('/notifications/config');
+}
+
+export function saveNotificationsConfig(config) {
+  return request('/notifications/config', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export function triggerBatchNotification() {
+  return request('/notifications/trigger', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export function saveSensorsConfig(data) {
+  return request('/sensors/config', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function fetchCalibrationAll() {
+  return request('/calibrate/all');
+}
+
+export function calibratePin(payload) {
+  return request('/calibrate/pin', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resetCalibrationPin(payload) {
+  return request('/calibrate/default/pin', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function autoCalibrateAdc(payload) {
+  return request('/adc/calibrate/auto', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function autoCalibrateAds(payload) {
+  return request('/ads/calibrate/auto', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
