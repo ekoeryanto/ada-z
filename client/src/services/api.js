@@ -84,6 +84,10 @@ export function saveModbusConfig(config) {
   });
 }
 
+export function fetchModbusSlaves() {
+  return request('/modbus/slaves');
+}
+
 export function getNotificationsConfig() {
   return request('/notifications/config');
 }

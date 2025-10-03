@@ -15,9 +15,6 @@ namespace {
 
 constexpr uint32_t MODBUS_BAUD = 9600;
 constexpr unsigned long POLL_INTERVAL_MS = 1000;
-constexpr int DEFAULT_DISTANCE_REG = 0x0101;
-constexpr int DEFAULT_TEMPERATURE_REG = 0x0002;
-constexpr int DEFAULT_SIGNAL_REG = 0x0003;
 
 HardwareSerial &rs485 = Serial2;
 ModbusMaster modbusNode;
@@ -36,25 +33,9 @@ private:
     portMUX_TYPE *mux_;
 };
 
-struct SensorConfig {
-    uint8_t address;
-    int distanceReg;
-    int temperatureReg;
-    int signalReg;
-    float maxDistanceM;
-    String id;
-    String label;
-    float ema_alpha; // 0.0 to 1.0, 0 = disabled
-};
-
-struct SensorState {
-    SensorConfig config;
-    ModbusSensorData data;
-    unsigned long lastRequestMs = 0;
-};
-
-std::vector<SensorState> sensors;
-size_t currentSensorIndex = 0;
+std::vector<ModbusSlave> slaves;
+size_t currentSlaveIndex = 0;
+unsigned long lastPollTime = 0;
 String currentConfigJson;
 
 void preTransmission() {
@@ -68,28 +49,50 @@ void postTransmission() {
 }
 
 const char DEFAULT_MODBUS_CONFIG[] PROGMEM = R"JSON({
-  "version": 1,
+  "version": 2,
+  "poll_interval_ms": 1000,
   "slaves": [
+    {
+      "address": 1,
+      "label": "Example Device",
+      "enabled": true,
+      "registers": [
         {
-            "id": "MB201",
-            "label": "Ultrasonik 1",
-            "address": 201,
-            "distance_reg": 257,
-            "temperature_reg": 2,
-            "signal_reg": 3,
-            "max_distance_m": 10.0
+          "key": "temperature",
+          "label": "Temperature",
+          "address": 100,
+          "reg_type": "holding",
+          "data_type": "int16",
+          "unit": "C",
+          "divisor": 10.0
         },
         {
-            "id": "MB202",
-            "label": "Ultrasonik 2",
-            "address": 202,
-            "distance_reg": 257,
-            "temperature_reg": 2,
-            "signal_reg": 3,
-            "max_distance_m": 10.0
+          "key": "humidity",
+          "label": "Humidity",
+          "address": 101,
+          "reg_type": "holding",
+          "data_type": "uint16",
+          "unit": "%",
+          "divisor": 10.0
         }
+      ]
+    }
   ]
 })JSON";
+
+// Helper to convert string to enum
+ModbusDataType stringToDataType(const String& str) {
+    if (str.equalsIgnoreCase("int16")) return ModbusDataType::INT16;
+    if (str.equalsIgnoreCase("uint32")) return ModbusDataType::UINT32;
+    if (str.equalsIgnoreCase("int32")) return ModbusDataType::INT32;
+    if (str.equalsIgnoreCase("float32")) return ModbusDataType::FLOAT32;
+    return ModbusDataType::UINT16; // Default
+}
+
+ModbusRegisterType stringToRegisterType(const String& str) {
+    if (str.equalsIgnoreCase("input")) return ModbusRegisterType::INPUT_REGISTER;
+    return ModbusRegisterType::HOLDING_REGISTER; // Default
+}
 
 } // namespace
 
@@ -107,46 +110,38 @@ bool applyModbusConfig(const String &json) {
         return false;
     }
 
-    std::vector<SensorState> parsed;
-    for (JsonObject obj : doc["slaves"].as<JsonArray>()) {
-        if (!obj["address"].is<uint16_t>()) {
-            return false;
+    std::vector<ModbusSlave> parsedSlaves;
+    for (JsonObject slaveObj : doc["slaves"].as<JsonArray>()) {
+        if (!slaveObj["address"].is<uint8_t>()) continue;
+
+        ModbusSlave slave;
+        slave.address = slaveObj["address"].as<uint8_t>();
+        slave.label = slaveObj["label"].as<String>();
+        slave.enabled = slaveObj["enabled"].is<bool>() ? slaveObj["enabled"].as<bool>() : true;
+
+        if (slaveObj["registers"].is<JsonArray>()) {
+            for (JsonObject regObj : slaveObj["registers"].as<JsonArray>()) {
+                ModbusRegister reg;
+                reg.key = regObj["key"].as<String>();
+                reg.label = regObj["label"].as<String>();
+                reg.address = regObj["address"].as<uint16_t>();
+                reg.reg_type = stringToRegisterType(regObj["reg_type"].as<String>());
+                reg.data_type = stringToDataType(regObj["data_type"].as<String>());
+                reg.unit = regObj["unit"].as<String>();
+                reg.divisor = regObj["divisor"].is<float>() ? regObj["divisor"].as<float>() : 1.0;
+                slave.registers.push_back(reg);
+            }
         }
-        SensorConfig cfg;
-        cfg.address = static_cast<uint8_t>(obj["address"].as<uint16_t>());
-        cfg.distanceReg = obj["distance_reg"].is<int>() ? obj["distance_reg"].as<int>() : DEFAULT_DISTANCE_REG;
-        cfg.temperatureReg = obj["temperature_reg"].is<int>() ? obj["temperature_reg"].as<int>() : DEFAULT_TEMPERATURE_REG;
-        cfg.signalReg = obj["signal_reg"].is<int>() ? obj["signal_reg"].as<int>() : DEFAULT_SIGNAL_REG;
-        cfg.maxDistanceM = obj["max_distance_m"].is<float>() ? obj["max_distance_m"].as<float>() : 10.0f;
-        cfg.id = obj["id"].is<const char*>() ? String(obj["id"].as<const char*>()) : String("MB") + String(cfg.address);
-        cfg.label = obj["label"].is<const char*>() ? String(obj["label"].as<const char*>()) : String();
-    cfg.ema_alpha = obj["ema_alpha"].is<float>() ? obj["ema_alpha"].as<float>() : 0.0f;
-
-        SensorState state;
-        state.config = cfg;
-        state.data.address = cfg.address;
-        state.data.id = cfg.id;
-        state.data.label = cfg.label;
-        state.data.online = false;
-    state.data.distance_mm = NAN;
-        state.data.smoothed_distance_mm = NAN;
-        state.data.temperature_c = NAN;
-        state.data.signal_strength = 0;
-        state.data.last_error = 0;
-        state.data.last_update_ms = 0;
-        state.data.max_distance_m = cfg.maxDistanceM;
-        state.lastRequestMs = 0;
-
-        parsed.push_back(std::move(state));
+        parsedSlaves.push_back(slave);
     }
 
     {
         CriticalSection guard(modbusMux);
-        sensors.swap(parsed);
-        if (!sensors.empty()) {
-            currentSensorIndex = currentSensorIndex % sensors.size();
+        slaves.swap(parsedSlaves);
+        if (!slaves.empty()) {
+            currentSlaveIndex = currentSlaveIndex % slaves.size();
         } else {
-            currentSensorIndex = 0;
+            currentSlaveIndex = 0;
         }
     }
 
@@ -163,8 +158,6 @@ String getModbusConfigJson() {
     return currentConfigJson;
 }
 
-// (modbus debug helper removed)
-
 void setupModbus() {
     pinMode(RS485_DE, OUTPUT);
     digitalWrite(RS485_DE, LOW);
@@ -173,164 +166,95 @@ void setupModbus() {
     modbusNode.preTransmission(preTransmission);
     modbusNode.postTransmission(postTransmission);
 
-    bool haveSensors;
-    {
-        CriticalSection guard(modbusMux);
-        haveSensors = !sensors.empty();
-    }
-
-    if (!haveSensors) {
+    if (getModbusConfigJson().length() == 0) {
         applyModbusConfig(getDefaultModbusConfigJson());
     }
 }
 
+void processRegisterValue(ModbusRegister& reg, uint16_t* buffer) {
+    uint32_t temp_val;
+    switch (reg.data_type) {
+        case ModbusDataType::UINT16:
+            reg.value = buffer[0];
+            break;
+        case ModbusDataType::INT16:
+            reg.value = (int16_t)buffer[0];
+            break;
+        case ModbusDataType::UINT32:
+            temp_val = (uint32_t)buffer[0] << 16 | buffer[1];
+            reg.value = temp_val;
+            break;
+        case ModbusDataType::INT32:
+            temp_val = (uint32_t)buffer[0] << 16 | buffer[1];
+            reg.value = (int32_t)temp_val;
+            break;
+        case ModbusDataType::FLOAT32:
+            temp_val = (uint32_t)buffer[0] << 16 | buffer[1];
+            memcpy(&reg.value, &temp_val, sizeof(reg.value));
+            break;
+    }
+    if (reg.divisor != 0) {
+        reg.value /= reg.divisor;
+    }
+    reg.last_update_ms = millis();
+}
+
 void loopModbus() {
     unsigned long now = millis();
-
-    SensorConfig configCopy;
-    size_t sensorIndex = 0;
-    bool shouldPoll = false;
-
-    {
-        CriticalSection guard(modbusMux);
-        if (sensors.empty()) {
-            currentSensorIndex = 0;
-            return;
-        }
-
-        SensorState &state = sensors[currentSensorIndex];
-        if (now - state.lastRequestMs < POLL_INTERVAL_MS) {
-            currentSensorIndex = (currentSensorIndex + 1) % sensors.size();
-            return;
-        }
-
-        state.lastRequestMs = now;
-        configCopy = state.config;
-        sensorIndex = currentSensorIndex;
-        shouldPoll = true;
+    if (now - lastPollTime < POLL_INTERVAL_MS) {
+        return;
     }
+    lastPollTime = now;
 
-    if (!shouldPoll) {
+    CriticalSection guard(modbusMux);
+    if (slaves.empty()) {
         return;
     }
 
-    modbusNode.begin(configCopy.address, rs485);
+    currentSlaveIndex = (currentSlaveIndex + 1) % slaves.size();
+    ModbusSlave& currentSlave = slaves[currentSlaveIndex];
 
-    float distanceMm = NAN;
-    float temperatureC = NAN;
-    uint16_t signalStrength = 0;
-    bool distanceRead = false;
-    bool temperatureRead = false;
-    bool signalRead = false;
-    uint8_t lastError = 0;
-
-    if (configCopy.distanceReg >= 0) {
-        uint8_t result = modbusNode.readHoldingRegisters(static_cast<uint16_t>(configCopy.distanceReg), 1);
-        if (result == modbusNode.ku8MBSuccess) {
-            uint16_t dist = modbusNode.getResponseBuffer(0);
-            distanceMm = static_cast<float>(dist);
-            distanceRead = true;
-        } else {
-            lastError = result;
-        }
+    if (!currentSlave.enabled) {
+        return;
     }
 
-    if (configCopy.temperatureReg >= 0) {
-        uint8_t result = modbusNode.readHoldingRegisters(static_cast<uint16_t>(configCopy.temperatureReg), 1);
-        if (result == modbusNode.ku8MBSuccess) {
-            uint16_t tempRaw = modbusNode.getResponseBuffer(0);
-            temperatureC = static_cast<float>(tempRaw) / 10.0f;
-            temperatureRead = true;
+    modbusNode.begin(currentSlave.address, rs485);
+    bool success = false;
+
+    for (auto& reg : currentSlave.registers) {
+        uint8_t result;
+        uint8_t read_len = 1;
+        if (reg.data_type == ModbusDataType::UINT32 || reg.data_type == ModbusDataType::INT32 || reg.data_type == ModbusDataType::FLOAT32) {
+            read_len = 2;
+        }
+
+        if (reg.reg_type == ModbusRegisterType::HOLDING_REGISTER) {
+            result = modbusNode.readHoldingRegisters(reg.address, read_len);
         } else {
-            lastError = result;
-            temperatureC = NAN;
+            result = modbusNode.readInputRegisters(reg.address, read_len);
         }
-    }
 
-    if (configCopy.signalReg >= 0) {
-        uint8_t result = modbusNode.readHoldingRegisters(static_cast<uint16_t>(configCopy.signalReg), 1);
         if (result == modbusNode.ku8MBSuccess) {
-            uint16_t sig = modbusNode.getResponseBuffer(0);
-            signalStrength = sig;
-            signalRead = true;
-        } else {
-            lastError = result;
-            signalStrength = 0;
-        }
-    }
-
-    unsigned long completedAt = millis();
-
-    {
-        CriticalSection guard(modbusMux);
-        size_t sensorCount = sensors.size();
-        if (sensorCount == 0 || sensorIndex >= sensorCount) {
-            currentSensorIndex = 0;
-            return;
-        }
-
-        SensorState &state = sensors[sensorIndex];
-        if (state.config.address != configCopy.address) {
-            currentSensorIndex = sensorCount > 0 ? (sensorIndex % sensorCount) : 0;
-            return;
-        }
-
-        unsigned long previousUpdate = state.data.last_update_ms;
-
-        state.data.address = configCopy.address;
-        state.data.id = configCopy.id;
-        state.data.label = configCopy.label;
-        state.data.max_distance_m = configCopy.maxDistanceM;
-
-        if (distanceRead) {
-            state.data.online = true;
-            state.data.distance_mm = distanceMm;
-            state.data.last_error = 0;
-            state.data.last_update_ms = completedAt;
-
-            // Apply EMA filter if enabled
-            if (configCopy.ema_alpha > 0.0f) {
-                if (isnan(state.data.smoothed_distance_mm)) {
-                    state.data.smoothed_distance_mm = distanceMm; // Initialize
-                } else {
-                    state.data.smoothed_distance_mm = (configCopy.ema_alpha * distanceMm) + ((1.0f - configCopy.ema_alpha) * state.data.smoothed_distance_mm);
-                }
-            } else {
-                state.data.smoothed_distance_mm = distanceMm; // No filter, use raw value
+            uint16_t buffer[2];
+            buffer[0] = modbusNode.getResponseBuffer(0);
+            if (read_len > 1) {
+                buffer[1] = modbusNode.getResponseBuffer(1);
             }
+            processRegisterValue(reg, buffer);
+            success = true;
         } else {
-            state.data.online = false;
-            state.data.distance_mm = NAN;
-            // Do not update smoothed value on error, keep last known good value
-            state.data.last_error = lastError;
-            state.data.last_update_ms = previousUpdate;
+            reg.value = NAN;
         }
+    }
 
-        if (temperatureRead) {
-            state.data.temperature_c = temperatureC;
-        } else {
-            state.data.temperature_c = NAN;
-        }
-
-        if (signalRead) {
-            state.data.signal_strength = signalStrength;
-        } else {
-            state.data.signal_strength = 0;
-        }
-
-        currentSensorIndex = sensorCount > 0 ? ((sensorIndex + 1) % sensorCount) : 0;
+    if (success) {
+        currentSlave.online = true;
+        currentSlave.last_successful_comm_ms = now;
+    } else {
+        currentSlave.online = false;
     }
 }
 
-const std::vector<ModbusSensorData>& getModbusSensors() {
-    static std::vector<ModbusSensorData> cache;
-    cache.clear();
-    {
-        CriticalSection guard(modbusMux);
-        cache.reserve(sensors.size());
-        for (const auto &state : sensors) {
-            cache.push_back(state.data);
-        }
-    }
-    return cache;
+const std::vector<ModbusSlave>& getModbusSlaves() {
+    return slaves;
 }

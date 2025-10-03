@@ -233,28 +233,6 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
         a["unit"] = "bar";
     }
 
-    // Modbus sensors -> value = distance in millimeters (or null)
-    const auto &modbusSensors = getModbusSensors();
-    for (const auto &mb : modbusSensors) {
-        JsonObject m = arr.add<JsonObject>();
-        m["id"] = mb.id.length() ? mb.id : String("MB") + String(mb.address);
-        m["source"] = "modbus";
-        m["enabled"] = mb.online ? 1 : 0;
-        
-        JsonObject val = m.createNestedObject("value");
-        if (!isnan(mb.distance_mm)) {
-            val["raw"] = roundToDecimals(mb.distance_mm, 0);
-        } else {
-            val["raw"] = nullptr;
-        }
-        if (!isnan(mb.smoothed_distance_mm)) {
-            val["filtered"] = roundToDecimals(mb.smoothed_distance_mm, 0);
-        } else {
-            val["filtered"] = nullptr;
-        }
-        m["unit"] = "mm";
-    }
-
     doc["tags_total"] = arr.size();
 
     String jsonPayload;

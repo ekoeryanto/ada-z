@@ -1010,6 +1010,55 @@ void setupWebServer(int port /*= 80*/) {
     modbusConfigHandler->setMaxContentLength(4096);
     server->addHandler(modbusConfigHandler);
 
+    server->on("/api/modbus/slaves", HTTP_GET, [](AsyncWebServerRequest *request) {
+        const std::vector<ModbusSlave>& slaves = getModbusSlaves();
+        
+        JsonDocument doc;
+        JsonArray slavesArray = doc.to<JsonArray>();
+
+        for (const auto& slave : slaves) {
+            JsonObject slaveObj = slavesArray.add<JsonObject>();
+            slaveObj["address"] = slave.address;
+            slaveObj["label"] = slave.label;
+            slaveObj["enabled"] = slave.enabled;
+            slaveObj["online"] = slave.online;
+            slaveObj["last_successful_comm_ms"] = slave.last_successful_comm_ms;
+
+            JsonArray registersArray = slaveObj["registers"].to<JsonArray>();
+            for (const auto& reg : slave.registers) {
+                JsonObject regObj = registersArray.add<JsonObject>();
+                regObj["key"] = reg.key;
+                regObj["label"] = reg.label;
+                regObj["address"] = reg.address;
+                
+                regObj["reg_type"] = (reg.reg_type == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
+                
+                String dataTypeStr;
+                switch (reg.data_type) {
+                    case ModbusDataType::UINT16: dataTypeStr = "uint16"; break;
+                    case ModbusDataType::INT16:  dataTypeStr = "int16"; break;
+                    case ModbusDataType::UINT32: dataTypeStr = "uint32"; break;
+                    case ModbusDataType::INT32:  dataTypeStr = "int32"; break;
+                    case ModbusDataType::FLOAT32:dataTypeStr = "float32"; break;
+                }
+                regObj["data_type"] = dataTypeStr;
+                
+                regObj["unit"] = reg.unit;
+                regObj["divisor"] = reg.divisor;
+                if (isnan(reg.value)) {
+                    regObj["value"] = nullptr;
+                } else {
+                    regObj["value"] = reg.value;
+                }
+                regObj["last_update_ms"] = reg.last_update_ms;
+            }
+        }
+
+        String response;
+        serializeJson(doc, response);
+        sendCorsJson(request, 200, "application/json", response);
+    });
+
     server->on("/api/diagnostics/network", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
         bool connected = isWifiConnected();
@@ -2016,46 +2065,6 @@ void setupWebServer(int port /*= 80*/) {
             meta["cal_tp_scale_mv_per_ma"] = tp_scale;
             meta["ma_smoothed"] = ma_smoothed;
             meta["depth_mm"] = depth_mm;
-        }
-
-        const auto &modbusSensors = getModbusSensors();
-        for (const auto &mb : modbusSensors) {
-            JsonObject s = tags.add<JsonObject>();
-            s["id"] = mb.id ? String(mb.id) : String("MB") + String(mb.address);
-            s["port"] = mb.address;
-            s["index"] = tags.size() - 1;
-            s["source"] = "modbus";
-            s["enabled"] = mb.online ? 1 : 0;
-
-            JsonObject val = s["value"].to<JsonObject>();
-            if (!isnan(mb.distance_mm)) {
-                val["raw"] = roundToDecimals(mb.distance_mm, 1);
-                val["filtered"] = roundToDecimals(mb.distance_mm, 1);
-            } else {
-                val["raw"] = nullptr;
-                val["filtered"] = nullptr;
-            }
-
-            JsonObject conv = val["converted"].to<JsonObject>();
-            if (!isnan(mb.distance_mm)) {
-                conv["value"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
-                conv["raw"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
-                conv["filtered"] = roundToDecimals(mb.distance_mm / 1000.0f, 3);
-            } else {
-                conv["value"] = nullptr;
-                conv["raw"] = nullptr;
-                conv["filtered"] = nullptr;
-            }
-            conv["unit"] = "m";
-            conv["semantic"] = "distance";
-
-            JsonObject meta = s["meta"].to<JsonObject>();
-            if (!isnan(mb.temperature_c)) {
-                meta["temperature_c"] = roundToDecimals(mb.temperature_c, 1);
-            }
-            meta["signal_strength"] = mb.signal_strength;
-            meta["last_error"] = mb.last_error;
-            meta["last_update_ms"] = (uint32_t)mb.last_update_ms;
         }
 
     // tags_total is number of sensor entries returned in `tags`
