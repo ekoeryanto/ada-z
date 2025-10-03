@@ -54,6 +54,7 @@
 </template>
 
 <script setup>
+import { ref, onMounted, computed } from 'vue';
 import { fetchCalibrationAll, resetCalibrationPin, autoCalibrateAdc, autoCalibrateAds } from '../services/api';
 import CalibrationModal from '../components/CalibrationModal.vue';
 
