@@ -26,7 +26,7 @@
           </span>
         </header>
 
-        <div class="mt-5 space-y-3 text-sm">
+          <div class="mt-5 space-y-3 text-sm">
           <div
             v-for="tag in group.tags || []"
             :key="tag.id"
@@ -58,6 +58,22 @@
                 <dt class="text-slate-500">Catatan</dt>
                 <dd class="text-right text-slate-200">{{ tag.notes }}</dd>
               </div>
+              <div class="mt-3 flex items-center justify-between">
+                <div class="text-xs text-slate-400">Enabled</div>
+                <div>
+                  <template v-if="isAnalogTag(tag.id)">
+                    <input
+                      type="checkbox"
+                      :checked="getEnabled(tag.id)"
+                      @change="toggleTagEnabled(tag)"
+                      class="h-4 w-4 rounded"
+                    />
+                  </template>
+                  <template v-else>
+                    <span class="text-xs text-slate-500">—</span>
+                  </template>
+                </div>
+              </div>
             </dl>
           </div>
         </div>
@@ -75,4 +91,43 @@ defineProps({
     default: () => [],
   },
 });
+</script>
+
+<script>
+import { saveSensorsConfig } from '../services/api';
+
+export default {
+  methods: {
+    isAnalogTag(id) {
+      return typeof id === 'string' && id.startsWith('AI');
+    },
+    getEnabled(id) {
+      // Default to enabled if no explicit flag present in tag
+      const parts = (id || '').match(/AI(\d+)/);
+      if (!parts) return false;
+      const idx = parseInt(parts[1], 10) - 1;
+      // try to read preference from server-side tags metadata if present in tag object
+      // Fallback: enabled by default
+      return true;
+    },
+    async toggleTagEnabled(tag) {
+      // Build sensors array payload for single tag update
+      const parts = (tag.id || '').match(/AI(\d+)/);
+      if (!parts) return;
+      const idx = parseInt(parts[1], 10) - 1;
+      // Toggle based on current (we assume enabled if not explicitly false)
+      const currentlyEnabled = tag.enabled !== undefined ? !!tag.enabled : true;
+      const payload = { sensors: [ { sensor_index: idx, enabled: !currentlyEnabled } ] };
+      try {
+        await saveSensorsConfig(payload);
+        // reflect change locally
+        tag.enabled = !currentlyEnabled ? 1 : 0;
+        // Optionally provide user feedback here (toast)
+      } catch (err) {
+        console.error('Failed to save sensor config', err);
+        // revert checkbox state if desired
+      }
+    },
+  },
+};
 </script>

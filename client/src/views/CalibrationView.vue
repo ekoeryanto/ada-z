@@ -10,7 +10,41 @@
     <div v-if="loading" class="text-center">Loading calibration data...</div>
     <div v-if="error" class="text-red-500">{{ error }}</div>
 
-    <div v-if="calibrationData" class="space-y-8">
+    <div v-if="!loading && !error" class="space-y-8">
+      <section>
+        <h2 class="text-lg font-semibold text-white">Auto Calibration</h2>
+        <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="bg-slate-900 p-6 rounded-lg">
+            <h3 class="text-md font-semibold text-white">ADC Sensors (0-10V)</h3>
+            <div class="mt-4 space-y-4">
+              <div v-for="sensor in groupedSensors['Analog Inputs']" :key="sensor.id" class="flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-400">{{ sensor.id }}</span>
+                <div class="flex items-center space-x-2">
+                  <input v-model.number="adcTargets[sensor.id]" type="number" class="block w-32 bg-slate-800 border-slate-700 rounded-md shadow-sm text-white" placeholder="Target">
+                  <button @click="runAdcAutoCalibration(sensor)" class="px-3 py-1 text-sm font-medium text-white bg-blue-600 rounded-md">
+                    Calibrate
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="bg-slate-900 p-6 rounded-lg">
+            <h3 class="text-md font-semibold text-white">ADS Sensors (4-20mA)</h3>
+            <div class="mt-4 space-y-4">
+              <div v-for="sensor in groupedSensors['ADS Sensors']" :key="sensor.id" class="flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-400">{{ sensor.id }}</span>
+                <div class="flex items-center space-x-2">
+                  <input v-model.number="adsTargets[sensor.id]" type="number" class="block w-32 bg-slate-800 border-slate-700 rounded-md shadow-sm text-white" placeholder="Target">
+                  <button @click="runAdsAutoCalibration(sensor)" class="px-3 py-1 text-sm font-medium text-white bg-blue-600 rounded-md">
+                    Calibrate
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section v-for="(sensors, group) in groupedSensors" :key="group">
         <h2 class="text-lg font-semibold text-white">{{ group }}</h2>
         <div class="mt-4 overflow-x-auto">
@@ -27,9 +61,9 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
-              <tr v-for="sensor in sensors" :key="sensor.tag">
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.tag }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.pin }}</td>
+              <tr v-for="sensor in sensors" :key="sensor.id">
+                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.id }}</td>
+                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.port }}</td>
                 <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_raw_adc }}</td>
                 <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.span_raw_adc }}</td>
                 <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_pressure_value }}</td>
@@ -55,33 +89,46 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import { fetchCalibrationAll, resetCalibrationPin, autoCalibrateAdc, autoCalibrateAds } from '../services/api';
+import { fetchCalibrationAll, fetchSensorReadings, resetCalibrationPin, autoCalibrateAdc, autoCalibrateAds } from '../services/api';
 import CalibrationModal from '../components/CalibrationModal.vue';
 
 const loading = ref(true);
 const error = ref(null);
 const calibrationData = ref(null);
+const sensorReadings = ref(null);
 const isModalOpen = ref(false);
 const selectedSensor = ref(null);
+const adcTargets = ref({});
+const adsTargets = ref({});
+
+const allSensors = computed(() => {
+  if (!sensorReadings.value || !sensorReadings.value.tags) return [];
+  const sensors = sensorReadings.value.tags.map(tag => {
+    const calData = calibrationData.value ? Object.values(calibrationData.value).find(c => c.pin === tag.port) : null;
+    return {
+      ...tag,
+      ...calData,
+    };
+  });
+  return sensors;
+});
 
 const groupedSensors = computed(() => {
-  if (!calibrationData.value) return {};
-  const groups = {};
-  for (const key in calibrationData.value) {
-    const sensor = calibrationData.value[key];
-    const group = sensor.tag.startsWith('AI') ? 'Analog Inputs' : 'Other';
-    if (!groups[group]) {
-      groups[group] = [];
-    }
-    groups[group].push(sensor);
-  }
+  if (!allSensors.value) return {};
+  const groups = {
+    'Analog Inputs': allSensors.value.filter(s => s.source === 'adc'),
+    'ADS Sensors': allSensors.value.filter(s => s.source === 'ads1115'),
+  };
   return groups;
 });
 
 async function fetchData() {
   try {
     loading.value = true;
-    calibrationData.value = await fetchCalibrationAll();
+    [calibrationData.value, sensorReadings.value] = await Promise.all([
+      fetchCalibrationAll(),
+      fetchSensorReadings(),
+    ]);
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -95,11 +142,45 @@ function editSensor(sensor) {
 }
 
 async function resetSensor(sensor) {
-  if (!confirm(`Are you sure you want to reset calibration for ${sensor.tag}?`)) {
+  if (!confirm(`Are you sure you want to reset calibration for ${sensor.id}?`)) {
     return;
   }
   try {
-    await resetCalibrationPin({ pin: sensor.pin });
+    await resetCalibrationPin({ pin: sensor.port });
+    await fetchData();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function runAdcAutoCalibration(sensor) {
+  const target = adcTargets.value[sensor.id];
+  if (target === undefined) {
+    alert('Please provide a target value.');
+    return;
+  }
+  if (!confirm(`Are you sure you want to run auto-calibration for ${sensor.id} with target ${target} bar?`)) {
+    return;
+  }
+  try {
+    await autoCalibrateAdc({ sensors: [{ pin: sensor.port, target: target }] });
+    await fetchData();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function runAdsAutoCalibration(sensor) {
+  const target = adsTargets.value[sensor.id];
+  if (target === undefined) {
+    alert('Please provide a target value.');
+    return;
+  }
+  if (!confirm(`Are you sure you want to run auto-calibration for ${sensor.id} with target ${target} bar?`)) {
+    return;
+  }
+  try {
+    await autoCalibrateAds({ channels: [{ channel: sensor.port, target: target }] });
     await fetchData();
   } catch (err) {
     error.value = err.message;

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Create a tar of client/dist and upload it to device /api/static/update using API key
-# Usage: ./scripts/http_static_upload.sh --host 192.168.1.50 --api-key MYKEY --dist client/dist
-
+# Package client/dist contents into a root tar (no leading folder) and upload to device
+# Usage: ./scripts/make_and_upload_static.sh --host 192.168.1.50 --api-key MYKEY [--dist client/dist] [--port 80]
 set -euo pipefail
 HOST=""
 API_KEY=""
@@ -13,10 +12,13 @@ usage() {
   cat <<EOF
 Usage: $0 --host HOST --api-key KEY [--dist PATH] [--port PORT] [--url URL]
 
+This script creates a tar whose contents are the files inside DIST (no leading directory),
+so the archive root contains index.html, assets/, etc. Then it uploads using the same
+endpoint used by the firmware (/api/static/update) with header X-Api-Key.
+
 Examples:
   $0 --host 192.168.1.50 --api-key Mar9aMulya
   $0 --url http://192.168.1.50/api/static/update --api-key Mar9aMulya
-
 EOF
 }
 
@@ -40,13 +42,14 @@ if [[ -z "$URL" ]]; then URL="http://$HOST:$PORT/api/static/update"; fi
 
 TMP_TAR=$(mktemp -t webclient-XXXXX.tar)
 
-echo "Creating tar $TMP_TAR from $DIST"
-# create tar without leading directory entries: use -C to set directory and archive contents
+echo "Creating tar $TMP_TAR from directory contents: $DIST"
+# Important: use -C to avoid leading directory entries and ensure archive root is file list
 tar -C "$DIST" -cf "$TMP_TAR" .
+
+if [[ ! -f "$TMP_TAR" ]]; then echo "Failed to create tar"; exit 2; fi
 
 echo "Uploading to $URL"
 curl -v --fail -H "X-Api-Key: $API_KEY" -F "file=@${TMP_TAR};filename=webclient.tar" "$URL"
-
 RC=$?
 rm -f "$TMP_TAR"
 if [[ $RC -ne 0 ]]; then

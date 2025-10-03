@@ -10,6 +10,7 @@ struct ModbusSensorData {
     String label;
     bool online;
     float distance_mm;
+    float smoothed_distance_mm;
     float temperature_c;
     uint16_t signal_strength;
     uint8_t last_error;

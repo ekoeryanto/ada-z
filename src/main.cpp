@@ -35,6 +35,7 @@
 // Timers
 unsigned long previousSensorMillis = 0;
 unsigned long previousTimePrintMillis = 0;
+static unsigned long lastBatchNotificationMillis = 0;
 // Per-sensor settings (allocated in setup)
 static bool *sensorEnabled = nullptr;
 static unsigned long *sensorNotificationInterval = nullptr;
@@ -284,7 +285,7 @@ void loop() {
             appendPendingNotification(payload);
 
             // Attempt immediate send as well
-            sendHttpNotificationBatch(dueSensorIndices.size(), dueSensorIndices.data(), rawVals, smoothedVals);
+            // sendHttpNotificationBatch(dueSensorIndices.size(), dueSensorIndices.data(), rawVals, smoothedVals);
         }
 
         delete[] rawVals;
@@ -307,6 +308,37 @@ void loop() {
 
         // Always log the CSV data to SD
         logSensorDataToSd(dataString);
+    }
+
+    // Periodic batch notification independent of sensor read loop
+    if (currentMillis - lastBatchNotificationMillis >= HTTP_NOTIFICATION_INTERVAL) {
+        lastBatchNotificationMillis = currentMillis;
+
+        int totalSensors = getNumVoltageSensors();
+        std::vector<int> allSensorIndices;
+        int *rawVals = new int[totalSensors];
+        float *smoothedVals = new float[totalSensors];
+
+        for (int i = 0; i < totalSensors; ++i) {
+            if (getSensorEnabled(i)) {
+                allSensorIndices.push_back(i);
+                float avgRaw, avgSmoothed, avgVolt;
+                if (getAverages(i, avgRaw, avgSmoothed, avgVolt)) {
+                    rawVals[i] = static_cast<int>(round(avgRaw));
+                    smoothedVals[i] = avgSmoothed;
+                } else {
+                    rawVals[i] = analogRead(getVoltageSensorPin(i));
+                    smoothedVals[i] = getSmoothedADC(i);
+                }
+            }
+        }
+
+        if (!allSensorIndices.empty()) {
+            sendHttpNotificationBatch(allSensorIndices.size(), allSensorIndices.data(), rawVals, smoothedVals);
+        }
+
+        delete[] rawVals;
+        delete[] smoothedVals;
     }
 
     // Periodic flush: every 5 minutes attempt to flush pending notifications from SD

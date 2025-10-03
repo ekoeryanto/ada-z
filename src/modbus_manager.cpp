@@ -1,6 +1,8 @@
 #include "modbus_manager.h"
 #include "pins_config.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
 #include <ModbusMaster.h>
 #include <math.h>
@@ -42,6 +44,7 @@ struct SensorConfig {
     float maxDistanceM;
     String id;
     String label;
+    float ema_alpha; // 0.0 to 1.0, 0 = disabled
 };
 
 struct SensorState {
@@ -95,7 +98,7 @@ String getDefaultModbusConfigJson() {
 }
 
 bool applyModbusConfig(const String &json) {
-    DynamicJsonDocument doc(4096);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json);
     if (err) {
         return false;
@@ -111,12 +114,13 @@ bool applyModbusConfig(const String &json) {
         }
         SensorConfig cfg;
         cfg.address = static_cast<uint8_t>(obj["address"].as<uint16_t>());
-        cfg.distanceReg = obj.containsKey("distance_reg") ? obj["distance_reg"].as<int>() : DEFAULT_DISTANCE_REG;
-        cfg.temperatureReg = obj.containsKey("temperature_reg") ? obj["temperature_reg"].as<int>() : DEFAULT_TEMPERATURE_REG;
-        cfg.signalReg = obj.containsKey("signal_reg") ? obj["signal_reg"].as<int>() : DEFAULT_SIGNAL_REG;
-        cfg.maxDistanceM = obj.containsKey("max_distance_m") ? obj["max_distance_m"].as<float>() : 10.0f;
-        cfg.id = obj.containsKey("id") ? String(obj["id"].as<const char*>()) : String("MB") + String(cfg.address);
-        cfg.label = obj.containsKey("label") ? String(obj["label"].as<const char*>()) : String();
+        cfg.distanceReg = obj["distance_reg"].is<int>() ? obj["distance_reg"].as<int>() : DEFAULT_DISTANCE_REG;
+        cfg.temperatureReg = obj["temperature_reg"].is<int>() ? obj["temperature_reg"].as<int>() : DEFAULT_TEMPERATURE_REG;
+        cfg.signalReg = obj["signal_reg"].is<int>() ? obj["signal_reg"].as<int>() : DEFAULT_SIGNAL_REG;
+        cfg.maxDistanceM = obj["max_distance_m"].is<float>() ? obj["max_distance_m"].as<float>() : 10.0f;
+        cfg.id = obj["id"].is<const char*>() ? String(obj["id"].as<const char*>()) : String("MB") + String(cfg.address);
+        cfg.label = obj["label"].is<const char*>() ? String(obj["label"].as<const char*>()) : String();
+    cfg.ema_alpha = obj["ema_alpha"].is<float>() ? obj["ema_alpha"].as<float>() : 0.0f;
 
         SensorState state;
         state.config = cfg;
@@ -124,7 +128,8 @@ bool applyModbusConfig(const String &json) {
         state.data.id = cfg.id;
         state.data.label = cfg.label;
         state.data.online = false;
-        state.data.distance_mm = NAN;
+    state.data.distance_mm = NAN;
+        state.data.smoothed_distance_mm = NAN;
         state.data.temperature_c = NAN;
         state.data.signal_strength = 0;
         state.data.last_error = 0;
@@ -282,9 +287,21 @@ void loopModbus() {
             state.data.distance_mm = distanceMm;
             state.data.last_error = 0;
             state.data.last_update_ms = completedAt;
+
+            // Apply EMA filter if enabled
+            if (configCopy.ema_alpha > 0.0f) {
+                if (isnan(state.data.smoothed_distance_mm)) {
+                    state.data.smoothed_distance_mm = distanceMm; // Initialize
+                } else {
+                    state.data.smoothed_distance_mm = (configCopy.ema_alpha * distanceMm) + ((1.0f - configCopy.ema_alpha) * state.data.smoothed_distance_mm);
+                }
+            } else {
+                state.data.smoothed_distance_mm = distanceMm; // No filter, use raw value
+            }
         } else {
             state.data.online = false;
             state.data.distance_mm = NAN;
+            // Do not update smoothed value on error, keep last known good value
             state.data.last_error = lastError;
             state.data.last_update_ms = previousUpdate;
         }
