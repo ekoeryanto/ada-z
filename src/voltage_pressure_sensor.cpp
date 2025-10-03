@@ -78,12 +78,29 @@ float getSmoothedVoltagePressure(int pinIndex) {
         return 0.0; // Return a default or error value
     }
 
-    // Apply calibration: calibration was stored as pressure vs RAW ADC values
-    // Use the smoothed ADC (raw ADC units) when applying the stored scale/offset
+    // 1. Get the current voltage reading using the complex conversion.
+    float currentVoltage = convert010V((int)smoothedADC[pinIndex]);
+
+    // 2. Get the calibration data for the sensor.
     SensorCalibration cal = voltageSensorCalibrations[pinIndex];
 
-    // Apply linear calibration for the specific sensor: pressure = rawAdc * scale + offset
-    float calibratedPressure = (smoothedADC[pinIndex] * cal.scale) + cal.offset;
+    // 3. At calibration time, the raw ADC values for zero and span pressures were stored.
+    //    Let's find out what the corrected voltage was at those calibration points.
+    float voltageAtZeroPoint = convert010V((int)cal.zeroRawAdc);
+    float voltageAtSpanPoint = convert010V((int)cal.spanRawAdc);
+
+    // 4. Now, map the `currentVoltage` from the measured voltage range [voltageAtZeroPoint, voltageAtSpanPoint]
+    //    to the desired pressure range [cal.zeroPressureValue, cal.spanPressureValue].
+
+    // Avoid division by zero if calibration points are identical.
+    if (fabs(voltageAtSpanPoint - voltageAtZeroPoint) < 0.001f) {
+        return currentVoltage; // Return uncalibrated voltage if calibration is invalid.
+    }
+
+    // Perform linear interpolation (map function).
+    float calibratedPressure = cal.zeroPressureValue + (currentVoltage - voltageAtZeroPoint) * 
+                             (cal.spanPressureValue - cal.zeroPressureValue) / 
+                             (voltageAtSpanPoint - voltageAtZeroPoint);
 
     return calibratedPressure;
 }
