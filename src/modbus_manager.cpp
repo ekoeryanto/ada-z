@@ -13,7 +13,8 @@
 
 namespace {
 
-constexpr uint32_t MODBUS_BAUD = 9600;
+constexpr uint32_t DEFAULT_MODBUS_BAUD = 9600;
+uint32_t currentModbusBaud = DEFAULT_MODBUS_BAUD;
 constexpr unsigned long POLL_INTERVAL_MS = 1000;
 
 HardwareSerial &rs485 = Serial2;
@@ -50,6 +51,7 @@ void postTransmission() {
 
 const char DEFAULT_MODBUS_CONFIG[] PROGMEM = R"JSON({
   "version": 2,
+  "baud_rate": 9600,
   "poll_interval_ms": 1000,
   "slaves": [
     {
@@ -101,11 +103,21 @@ String getDefaultModbusConfigJson() {
 }
 
 bool applyModbusConfig(const String &json) {
-    JsonDocument doc;
+    DynamicJsonDocument doc(2048);
     DeserializationError err = deserializeJson(doc, json);
     if (err) {
         return false;
     }
+
+    // If baud_rate is specified, use it. Otherwise, fall back to the default.
+    // This ensures that a config without a baud_rate key will reset the baud rate to default.
+    uint32_t newBaud = doc.containsKey("baud_rate") ? doc["baud_rate"].as<uint32_t>() : DEFAULT_MODBUS_BAUD;
+    if (newBaud > 0 && newBaud != currentModbusBaud) {
+        currentModbusBaud = newBaud;
+        rs485.end();
+        rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
+    }
+
     if (!doc["slaves"].is<JsonArray>()) {
         return false;
     }
@@ -122,6 +134,7 @@ bool applyModbusConfig(const String &json) {
         if (slaveObj["registers"].is<JsonArray>()) {
             for (JsonObject regObj : slaveObj["registers"].as<JsonArray>()) {
                 ModbusRegister reg;
+                reg.id = regObj["id"].as<String>();
                 reg.key = regObj["key"].as<String>();
                 reg.label = regObj["label"].as<String>();
                 reg.address = regObj["address"].as<uint16_t>();
@@ -162,7 +175,7 @@ void setupModbus() {
     pinMode(RS485_DE, OUTPUT);
     digitalWrite(RS485_DE, LOW);
 
-    rs485.begin(MODBUS_BAUD, SERIAL_8N1, RS485_RX, RS485_TX);
+    rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
     modbusNode.preTransmission(preTransmission);
     modbusNode.postTransmission(postTransmission);
 
@@ -257,4 +270,54 @@ void loopModbus() {
 
 const std::vector<ModbusSlave>& getModbusSlaves() {
     return slaves;
+}
+
+String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t regAddress, uint8_t count, uint32_t baudRate) {
+    CriticalSection guard(modbusMux); // Ensure exclusive access to the bus
+
+    bool baudChanged = false;
+    if (baudRate > 0 && baudRate != currentModbusBaud) {
+        baudChanged = true;
+        rs485.end();
+        rs485.begin(baudRate, SERIAL_8N1, RS485_RX, RS485_TX);
+    }
+
+    modbusNode.begin(slaveAddress, rs485);
+
+    uint8_t result;
+    if (regType == ModbusRegisterType::HOLDING_REGISTER) {
+        result = modbusNode.readHoldingRegisters(regAddress, count);
+    } else {
+        result = modbusNode.readInputRegisters(regAddress, count);
+    }
+
+    if (baudChanged) {
+        rs485.end();
+        rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
+    }
+
+    JsonDocument doc;
+    doc["slave_address"] = slaveAddress;
+    doc["register_type"] = (regType == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
+    doc["register_address"] = regAddress;
+    doc["count"] = count;
+    if (baudRate > 0) {
+        doc["baud_rate"] = baudRate;
+    }
+
+    if (result == modbusNode.ku8MBSuccess) {
+        doc["status"] = "success";
+        JsonArray data = doc["data"].to<JsonArray>();
+        for (int i = 0; i < count; i++) {
+            data.add(modbusNode.getResponseBuffer(i));
+        }
+    } else {
+        doc["status"] = "error";
+        doc["error_code"] = result;
+        doc["error_message"] = "Modbus error: " + String(result, HEX);
+    }
+
+    String output;
+    serializeJson(doc, output);
+    return output;
 }

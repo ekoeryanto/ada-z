@@ -35,6 +35,7 @@ const links = [
   { to: '/', label: 'Dashboard', icon: 'mdi:view-dashboard-outline' },
   { to: '/tags', label: 'Tag Directory', icon: 'mdi:tag-text-outline' },
   { to: '/modbus', label: 'Modbus', icon: 'mdi:serial-port' },
+  { to: '/modbus-poll', label: 'Modbus Poll', icon: 'mdi:magnify-scan' },
   { to: '/notifications', label: 'Notifications', icon: 'mdi:bell-outline' },
   { to: '/calibration', label: 'Calibration', icon: 'mdi:tune' },
 ];

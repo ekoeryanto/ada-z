@@ -200,7 +200,7 @@ async function reloadConfig() {
 onMounted(async () => {
   await loadConfig();
   await fetchLiveData();
-  liveDataInterval = setInterval(fetchLiveData, 2000);
+  liveDataInterval = setInterval(fetchLiveData, 20000);
 });
 
 onUnmounted(() => {

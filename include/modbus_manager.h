@@ -19,6 +19,7 @@ enum class ModbusRegisterType {
 };
 
 struct ModbusRegister {
+    String id;
     String key;
     String label;
     uint16_t address;
@@ -49,5 +50,7 @@ String getModbusConfigJson();
 String getDefaultModbusConfigJson();
 
 const std::vector<ModbusSlave>& getModbusSlaves();
+
+String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t regAddress, uint8_t count, uint32_t baudRate = 0);
 
 #endif // MODBUS_MANAGER_H

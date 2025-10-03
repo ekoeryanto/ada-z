@@ -17,6 +17,11 @@ const routes = [
     component: () => import('../views/ModbusView.vue'),
   },
   {
+    path: '/modbus-poll',
+    name: 'modbus-poll',
+    component: () => import('../views/ModbusPollView.vue'),
+  },
+  {
     path: '/notifications',
     name: 'notifications',
     component: () => import('../views/NotificationsView.vue'),

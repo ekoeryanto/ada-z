@@ -88,6 +88,13 @@ export function fetchModbusSlaves() {
   return request('/modbus/slaves');
 }
 
+export function pollModbus(params) {
+  return request('/modbus/poll', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 export function getNotificationsConfig() {
   return request('/notifications/config');
 }

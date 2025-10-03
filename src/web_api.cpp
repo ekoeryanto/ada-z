@@ -1027,6 +1027,7 @@ void setupWebServer(int port /*= 80*/) {
             JsonArray registersArray = slaveObj["registers"].to<JsonArray>();
             for (const auto& reg : slave.registers) {
                 JsonObject regObj = registersArray.add<JsonObject>();
+                regObj["id"] = reg.id;
                 regObj["key"] = reg.key;
                 regObj["label"] = reg.label;
                 regObj["address"] = reg.address;
@@ -1058,6 +1059,30 @@ void setupWebServer(int port /*= 80*/) {
         serializeJson(doc, response);
         sendCorsJson(request, 200, "application/json", response);
     });
+
+    auto *modbusPollHandler = new AsyncCallbackJsonWebHandler("/api/modbus/poll", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        JsonObject obj = json.as<JsonObject>();
+        if (obj.isNull()) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+            return;
+        }
+
+        uint8_t slaveAddress = obj["slave_address"];
+        String regTypeStr = obj["register_type"];
+        uint16_t regAddress = obj["register_address"];
+        uint8_t count = obj["count"];
+
+        if (count == 0 || count > 125) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid count (must be 1-125)\"}");
+            return;
+        }
+
+        ModbusRegisterType regType = (regTypeStr.equalsIgnoreCase("input")) ? ModbusRegisterType::INPUT_REGISTER : ModbusRegisterType::HOLDING_REGISTER;
+
+        String result = pollModbus(slaveAddress, regType, regAddress, count);
+        sendCorsJson(request, 200, "application/json", result);
+    });
+    server->addHandler(modbusPollHandler);
 
     server->on("/api/diagnostics/network", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
