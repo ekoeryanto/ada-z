@@ -81,7 +81,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
         float converted = haveAvg ? avgVolt : (avgSmoothed * cal.scale) + cal.offset;
 
-        DynamicJsonDocument outDocStream(1024);
+        JsonDocument outDocStream;
         outDocStream["tag"] = tag;
         outDocStream["pin_index"] = pinIndex;
         outDocStream["pin"] = pin;
@@ -99,7 +99,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
     // Sensors config endpoints (GET and POST)
     server->on("/api/sensors/config", HTTP_GET, [](AsyncWebServerRequest *request) {
         int n = getConfiguredNumSensors();
-        DynamicJsonDocument doc(1024);
+        JsonDocument doc;
         doc["num_sensors"] = n;
         JsonArray arr = doc["sensors"].to<JsonArray>();
         for (int i = 0; i < n; ++i) {
@@ -146,7 +146,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
 
     // Live sensor readings
     server->on("/api/sensors/readings", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<8192> doc; // size chosen to accommodate sensors payload
+        JsonDocument doc; // size chosen to accommodate sensors payload
         buildSensorsReadingsJson(doc);
         sendCorsJsonDoc(request, 200, doc);
     });
@@ -154,7 +154,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
     // Calibration endpoints
     server->on("/api/calibrate", HTTP_GET, [](AsyncWebServerRequest *request) {
         // reuse centralized build
-        DynamicJsonDocument doc(1024);
+        JsonDocument doc;
         // Provide a list or single sensor info as appropriate
         for (int i = 0; i < getNumVoltageSensors(); ++i) {
             struct SensorCalibration cal = getCalibrationForPin(i);
@@ -286,7 +286,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
 
     // ADC config & handlers
     server->on("/api/adc/config", HTTP_GET, [](AsyncWebServerRequest *request) {
-        DynamicJsonDocument doc(128);
+        JsonDocument doc;
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
         float scale = 1.0f;
@@ -387,9 +387,9 @@ void registerSensorHandlers(AsyncWebServer *server) {
         }
 
         int pinIndex = -1;
-        if (doc.containsKey("pin_index") && doc["pin_index"].is<int>()) {
+        if (!doc["pin_index"].isNull() && doc["pin_index"].is<int>()) {
             pinIndex = doc["pin_index"].as<int>();
-        } else if (doc.containsKey("tag") && doc["tag"].is<const char*>()) {
+        } else if (!doc["tag"].isNull() && doc["tag"].is<const char*>()) {
             pinIndex = tagToIndex(String(doc["tag"].as<const char*>()));
         }
 
@@ -400,7 +400,7 @@ void registerSensorHandlers(AsyncWebServer *server) {
         }
 
         // Build a small JSON payload with direct/raw reads for debugging.
-        DynamicJsonDocument payload(512);
+        JsonDocument payload;
         payload["pin_index"] = pinIndex;
         payload["tag"] = String("AI") + String(pinIndex + 1);
         int pin = getVoltageSensorPin(pinIndex);

@@ -13,7 +13,7 @@ void registerSystemHandlers(AsyncWebServer *server) {
     });
 
     server->on("/api/time/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
@@ -33,7 +33,7 @@ void registerSystemHandlers(AsyncWebServer *server) {
     });
 
     server->on("/api/system", HTTP_GET, [](AsyncWebServerRequest *request) {
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         bool connected = WiFi.status() == WL_CONNECTED;
         doc["connected"] = connected ? 1 : 0;
         doc["ip"] = WiFi.localIP().toString();
@@ -51,7 +51,7 @@ void registerSystemHandlers(AsyncWebServer *server) {
 
     server->on("/api/tags", HTTP_GET, [](AsyncWebServerRequest *request) {
         String payload = loadTagMetadataJson();
-        DynamicJsonDocument doc(4096);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             // fallback to raw string if stored payload is not valid JSON

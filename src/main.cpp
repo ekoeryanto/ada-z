@@ -295,7 +295,7 @@ void loop() {
                 }
                 if (send && (millis() - lm >= SSE_PUSH_COOLDOWN_MS)) {
                     // Build simple JSON payload and push
-                    DynamicJsonDocument p(256);
+                    JsonDocument p;
                     p["pin_index"] = i;
                     p["tag"] = String("AI") + String(i + 1);
                     p["value"] = roundToDecimals(volt, 3);

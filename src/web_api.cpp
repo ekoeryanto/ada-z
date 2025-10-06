@@ -153,7 +153,7 @@ void handleConfig() {
 
 void handleConfigGet(AsyncWebServerRequest *request) {
     // Build the config into a JsonDocument and stream it directly to client
-    DynamicJsonDocument doc(8192);
+    JsonDocument doc;
     populateUnifiedConfig(doc);
     sendCorsJsonDoc(request, 200, doc);
 }
@@ -308,7 +308,7 @@ void handleConfigPost(AsyncWebServerRequest *request, JsonVariant &json) {
             persistSensorSettings();
         }
 
-    DynamicJsonDocument responseDoc(CONFIG_DOC_CAP);
+    JsonDocument responseDoc;
     populateUnifiedConfig(responseDoc);
     sendCorsJsonDoc(request, 200, responseDoc);
 }
@@ -427,7 +427,7 @@ void handleCalibrateGet(AsyncWebServerRequest *request) {
 
         struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             // Build calibration JSON using centralized builder and stream to client
-            StaticJsonDocument<256> doc;
+            JsonDocument doc;
             buildCalibrationJsonForPin(doc, pinIndex);
             sendCorsJsonDoc(request, 200, doc);
 }
@@ -500,7 +500,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/api/modbus/config", HTTP_GET, [](AsyncWebServerRequest *request) {
         // Parse stored modbus config and stream it
         String payload = getModbusConfigJson();
-        DynamicJsonDocument doc(4096);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             // If parsing fails, return raw string as fallback
@@ -534,16 +534,18 @@ void setupWebServer(int port /*= 80*/) {
             persisted = saveModbusConfigJsonToFile(getModbusConfigJson());
         }
 
-    DynamicJsonDocument resp(2048);
-        resp["status"] = persisted ? "success" : (sdReady ? "warning" : "accepted");
-        resp["persisted"] = persisted ? 1 : 0;
+        String statusStr = persisted ? "success" : (sdReady ? "warning" : "accepted");
+        String messageStr;
         if (!sdReady && !persisted) {
-            resp["message"] = "Configuration applied but SD card is not available";
+            messageStr = "Configuration applied but SD card is not available";
         } else if (sdReady && !persisted) {
-            resp["message"] = "Configuration applied but failed to persist to SD";
+            messageStr = "Configuration applied but failed to persist to SD";
         } else {
-            resp["message"] = "Modbus configuration updated";
+            messageStr = "Modbus configuration updated";
         }
+
+        auto resp = makeStatusDoc(statusStr.c_str(), messageStr, 2048);
+        resp["persisted"] = persisted ? 1 : 0;
         if (!saveAttempted) {
             resp["sd_ready"] = sdReady ? 1 : 0;
         }
@@ -557,7 +559,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/api/modbus/slaves", HTTP_GET, [](AsyncWebServerRequest *request) {
         const std::vector<ModbusSlave>& slaves = getModbusSlaves();
         
-        DynamicJsonDocument docStream(8192);
+        JsonDocument docStream;
         JsonArray slavesArray = docStream.to<JsonArray>();
 
         for (const auto& slave : slaves) {
@@ -624,7 +626,7 @@ void setupWebServer(int port /*= 80*/) {
         ModbusRegisterType regType = (regTypeStr.equalsIgnoreCase("input")) ? ModbusRegisterType::INPUT_REGISTER : ModbusRegisterType::HOLDING_REGISTER;
 
         String result = pollModbus(slaveAddress, regType, regAddress, count);
-        DynamicJsonDocument maybe(4096);
+        JsonDocument maybe;
         DeserializationError derr = deserializeJson(maybe, result);
         if (derr) {
             sendCorsJson(request, 200, "application/json", result);
@@ -635,7 +637,7 @@ void setupWebServer(int port /*= 80*/) {
     server->addHandler(modbusPollHandler);
 
     server->on("/api/diagnostics/network", HTTP_GET, [](AsyncWebServerRequest *request) {
-    DynamicJsonDocument respDoc(1024);
+    JsonDocument respDoc;
         bool connected = isWifiConnected();
         respDoc["connected"] = connected ? 1 : 0;
         respDoc["status"] = (int)WiFi.status();
@@ -834,7 +836,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // RTC read/set endpoints
     server->on("/api/time/rtc", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<512> doc;
+        JsonDocument doc;
         doc["rtc_found"] = isRtcPresent() ? 1 : 0;
         doc["rtc_lost_power"] = isRtcLostPower() ? 1 : 0;
         time_t rtcEpoch = isRtcPresent() ? getRtcEpoch() : 0;
@@ -849,7 +851,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // OTA status endpoint (informational)
     server->on("/api/update/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         doc["auth_rejected"] = otaLastAuthRejected ? 1 : 0;
         doc["had_error"] = otaLastHadError ? 1 : 0;
         doc["succeeded"] = otaLastSucceeded ? 1 : 0;
@@ -955,9 +957,7 @@ void setupWebServer(int port /*= 80*/) {
             // Reseed smoothed ADC so readings update immediately
             setupVoltagePressureSensor();
 
-            JsonDocument respDoc;
-            respDoc["status"] = "success";
-            respDoc["message"] = "Span calibration applied";
+            auto respDoc = makeSuccessDoc("Span calibration applied", 512);
             respDoc["pin_index"] = pinIndex;
             respDoc["pin"] = getVoltageSensorPin(pinIndex);
             respDoc["measured_raw_avg"] = roundToDecimals(avgRaw, 2);
@@ -1451,7 +1451,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // Live sensor readings: raw ADC (current analogRead), smoothed ADC, and calibrated voltage
     server->on("/api/sensors/readings", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<8192> doc; // size chosen to accommodate sensors payload
+    JsonDocument doc;
         buildSensorsReadingsJson(doc);
         sendCorsJsonDoc(request, 200, doc);
     });
@@ -1460,7 +1460,7 @@ void setupWebServer(int port /*= 80*/) {
     server->on("/api/notifications/config", HTTP_GET, [](AsyncWebServerRequest *request) {
     int mode = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_MODE, DEFAULT_NOTIFICATION_MODE);
     int payload = loadIntFromNVSns(PREF_NAMESPACE, PREF_NOTIFICATION_PAYLOAD, DEFAULT_NOTIFICATION_PAYLOAD_TYPE);
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["mode"] = mode;
     doc["payload_type"] = payload;
     sendCorsJsonDoc(request, 200, doc);
@@ -1488,7 +1488,7 @@ void setupWebServer(int port /*= 80*/) {
     server->addHandler(notifConfigHandler);
     // ADS channel configuration endpoints: view and set per-channel shunt and amp gain
     server->on("/api/ads/config", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
         JsonArray arr = doc["channels"].to<JsonArray>();
         for (int ch = 0; ch <= 1; ++ch) {
             JsonObject o = arr.add<JsonObject>();
@@ -1557,7 +1557,7 @@ void setupWebServer(int port /*= 80*/) {
 
     // ADC smoothing/runtime sample-store configuration
     server->on("/api/adc/config", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<128> doc;
+    JsonDocument doc;
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
         sendCorsJsonDoc(request, 200, doc);
@@ -1754,7 +1754,7 @@ void setupWebServer(int port /*= 80*/) {
 
         // OTA space diagnostics endpoint
     server->on("/api/update/space", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<256> doc;
+        JsonDocument doc;
         doc["free_sketch_space"] = (uint32_t)ESP.getFreeSketchSpace();
         doc["max_sketch_size"] = (uint32_t)ESP.getSketchSize();
         sendCorsJsonDoc(request, 200, doc);

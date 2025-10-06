@@ -7,20 +7,20 @@ String buildJsonString(JsonDocument &doc) {
     return out;
 }
 
-DynamicJsonDocument makeStatusDoc(const char* status, const String &message, size_t capacity) {
-    DynamicJsonDocument doc(capacity);
+JsonDocument makeStatusDoc(const char* status, const String &message, size_t capacity) {
+    JsonDocument doc;
     setStatusMessage(doc, status, message);
     return doc;
 }
 
-DynamicJsonDocument makeErrorDoc(const String &message, size_t capacity) {
-    DynamicJsonDocument doc(capacity);
+JsonDocument makeErrorDoc(const String &message, size_t capacity) {
+    JsonDocument doc;
     setStatusMessage(doc, "error", message);
     return doc;
 }
 
-DynamicJsonDocument makeSuccessDoc(const String &message, size_t capacity) {
-    DynamicJsonDocument doc(capacity);
+JsonDocument makeSuccessDoc(const String &message, size_t capacity) {
+    JsonDocument doc;
     setStatusMessage(doc, "success", message);
     return doc;
 }
@@ -29,7 +29,7 @@ void setStatusMessage(JsonDocument &doc, const char* status, const String &messa
     doc["status"] = status;
     if (message.length() > 0) {
         doc["message"] = message;
-    } else if (!doc.containsKey("message")) {
+    } else if (doc["message"].isNull()) {
         // Ensure message exists (empty string) for consistent schema
         doc["message"] = "";
     }

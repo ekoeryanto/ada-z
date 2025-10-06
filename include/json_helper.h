@@ -15,13 +15,13 @@
 String buildJsonString(JsonDocument &doc);
 
 // Helper factories for common {status, message} envelopes
-DynamicJsonDocument makeStatusDoc(const char* status,
-                                  const String &message = String(""),
-                                  size_t capacity = 160);
-DynamicJsonDocument makeErrorDoc(const String &message,
-                                 size_t capacity = 160);
-DynamicJsonDocument makeSuccessDoc(const String &message = String(""),
-                                   size_t capacity = 160);
+JsonDocument makeStatusDoc(const char* status,
+                           const String &message = String(""),
+                           size_t capacity = 160);
+JsonDocument makeErrorDoc(const String &message,
+                          size_t capacity = 160);
+JsonDocument makeSuccessDoc(const String &message = String(""),
+                            size_t capacity = 160);
 
 // Convenience to mutate an existing document with status/message fields
 void setStatusMessage(JsonDocument &doc, const char* status,

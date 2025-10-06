@@ -119,7 +119,7 @@ String loadTagMetadataJson() {
 
 bool saveTagMetadataJson(const String &payload) {
     if (!sdReady) return false;
-    DynamicJsonDocument doc(8192);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload);
     if (err) return false;
     if (!doc["groups"].is<JsonArray>()) return false;

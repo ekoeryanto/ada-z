@@ -79,7 +79,7 @@ static void ensureNtpServersLoaded() {
     configuredNtpServers.clear();
     String raw = loadStringFromNVSns(PREF_TIME_NS, PREF_NTP_SERVERS_JSON, String(""));
     if (raw.length() > 0) {
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         if (deserializeJson(doc, raw) == DeserializationError::Ok && doc.is<JsonArray>()) {
             for (JsonVariant v : doc.as<JsonArray>()) {
                 if (v.is<const char*>()) {
@@ -99,7 +99,7 @@ static void ensureNtpServersLoaded() {
 }
 
 static void persistNtpServers() {
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     for (const String &s : configuredNtpServers) {
         arr.add(s);

@@ -10,6 +10,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "json_helper.h"
 
 namespace {
 
@@ -115,7 +116,7 @@ String getDefaultModbusConfigJson() {
 }
 
 bool applyModbusConfig(const String &json) {
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json);
     if (err) {
         return false;
@@ -123,7 +124,7 @@ bool applyModbusConfig(const String &json) {
 
     // If baud_rate is specified, use it. Otherwise, fall back to the default.
     // This ensures that a config without a baud_rate key will reset the baud rate to default.
-    uint32_t newBaud = doc.containsKey("baud_rate") ? doc["baud_rate"].as<uint32_t>() : DEFAULT_MODBUS_BAUD;
+    uint32_t newBaud = doc["baud_rate"].isNull() ? DEFAULT_MODBUS_BAUD : doc["baud_rate"].as<uint32_t>();
     if (newBaud > 0 && newBaud != currentModbusBaud) {
         currentModbusBaud = newBaud;
         rs485.end();
@@ -314,7 +315,8 @@ String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t reg
         rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
     }
 
-    JsonDocument doc;
+    const size_t baseCapacity = 256 + (count * 12);
+    auto doc = makeSuccessDoc("", baseCapacity);
     doc["slave_address"] = slaveAddress;
     doc["register_type"] = (regType == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
     doc["register_address"] = regAddress;
@@ -324,15 +326,14 @@ String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t reg
     }
 
     if (result == modbusNode.ku8MBSuccess) {
-        doc["status"] = "success";
         JsonArray data = doc["data"].to<JsonArray>();
         for (int i = 0; i < count; i++) {
             data.add(modbusNode.getResponseBuffer(i));
         }
     } else {
-        doc["status"] = "error";
+        String errMsg = String("Modbus error: ") + String(result, HEX);
+        setStatusMessage(doc, "error", errMsg);
         doc["error_code"] = result;
-        doc["error_message"] = "Modbus error: " + String(result, HEX);
     }
 
     String output;
