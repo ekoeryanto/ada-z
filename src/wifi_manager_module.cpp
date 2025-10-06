@@ -47,8 +47,8 @@ static void registerWifiHandlers() {
         #if ENABLE_VERBOSE_LOGS
         Serial.println("WiFi event: STA_GOT_IP - triggering NTP sync and starting OTA");
         #endif
-        // Trigger NTP sync immediately on IP acquisition
-        syncNtp();
+        // Trigger NTP sync immediately on IP acquisition and update RTC afterwards
+        syncNtp(true);
         // Ensure OTA updater is started after we have a valid IP (espota listens on TCP 3232)
         setupOtaUpdater();
         lastWifiGotIpMillis = millis();

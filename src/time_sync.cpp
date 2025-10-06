@@ -23,6 +23,7 @@ static unsigned long lastSyncRequestMillis = 0;
 static unsigned long lastSyncSuccessMillis = 0;
 static unsigned long lastSyncAttemptMillis = 0;
 static unsigned long lastNtpAttempt = 0;
+static unsigned long lastRtcAdjustMillis = 0;
 
 static time_t cachedLastNtpEpoch = 0;
 static String cachedLastNtpIso;
@@ -37,6 +38,7 @@ static const char* PREF_NTP_SYNC_MS = "ntp_sync_ms";
 static const char* PREF_NTP_RETRY_MS = "ntp_retry_ms";
 
 static const long MAX_RTC_DRIFT_SECONDS = 2;
+static const unsigned long SYSTEM_TIME_TRUST_MS = 6UL * 3600UL * 1000UL; // 6 hours
 
 static String currentTimezone = String(TIMEZONE);
 static bool timezoneLoaded = false;
@@ -122,6 +124,12 @@ static bool systemTimeIsValid() {
     return epochPlausible(now);
 }
 
+static bool systemTimeRecentlySynced() {
+    if (lastSyncSuccessMillis == 0) return false;
+    unsigned long nowMs = millis();
+    return (nowMs - lastSyncSuccessMillis) <= SYSTEM_TIME_TRUST_MS;
+}
+
 static void setSystemTimeFromEpoch(time_t epoch) {
     struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
     settimeofday(&tv, nullptr);
@@ -151,6 +159,7 @@ static void IRAM_ATTR onSntpSync(struct timeval *tv) {
         rtc.adjust(DateTime((uint32_t)epoch));
         pendingRtcSync = false;
         logErrorToSd(String("RTC updated from NTP: ") + cachedLastNtpIso);
+        lastRtcAdjustMillis = millis();
     }
 
     alignSystemTimeWithRtc();
@@ -291,15 +300,30 @@ static void alignSystemTimeWithRtc() {
     time_t rtcEpoch = getRtcEpoch();
     if (!epochPlausible(rtcEpoch)) return;
 
-    if (!systemTimeIsValid()) {
+    bool sysValid = systemTimeIsValid();
+    time_t sysEpoch = time(nullptr);
+
+    if (!sysValid) {
         setSystemTimeFromEpoch(rtcEpoch);
+        #if ENABLE_VERBOSE_LOGS
         Serial.println("System time restored from RTC (system time invalid).");
+        #endif
         return;
     }
 
-    time_t sysEpoch = time(nullptr);
     long diff = labs((long)(rtcEpoch - sysEpoch));
-    if (diff > MAX_RTC_DRIFT_SECONDS) {
+    if (diff <= MAX_RTC_DRIFT_SECONDS) {
+        return;
+    }
+
+    if (systemTimeRecentlySynced()) {
+        // Trust the freshly synced system time and push it to RTC
+        rtc.adjust(DateTime((uint32_t)sysEpoch));
+        lastRtcAdjustMillis = millis();
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("RTC realigned to system time (drift %ld seconds)\n", diff);
+        #endif
+    } else {
         setSystemTimeFromEpoch(rtcEpoch);
         #if ENABLE_VERBOSE_LOGS
         Serial.printf("System time realigned to RTC (drift %ld seconds)\n", diff);
@@ -338,6 +362,10 @@ void setupTimeSync() {
     }
 
     alignSystemTimeWithRtc();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        syncNtp(true);
+    }
 }
 
 void loopTimeSync() {
@@ -363,6 +391,20 @@ void loopTimeSync() {
 
     if (needSync && nowMillis - lastSyncAttemptMillis > ntpRetryIntervalMs) {
         syncNtp(true);
+        return;
+    }
+
+    if (rtcFound && rtcEnabled && systemTimeRecentlySynced()) {
+        if (nowMillis - lastRtcAdjustMillis > SYSTEM_TIME_TRUST_MS) {
+            time_t sysEpoch = time(nullptr);
+            if (epochPlausible(sysEpoch)) {
+                rtc.adjust(DateTime((uint32_t)sysEpoch));
+                lastRtcAdjustMillis = nowMillis;
+                #if ENABLE_VERBOSE_LOGS
+                Serial.println("Periodic RTC alignment to system time.");
+                #endif
+            }
+        }
     }
 }
 
