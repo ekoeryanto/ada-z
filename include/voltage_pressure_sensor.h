@@ -5,6 +5,8 @@
 
 // Function to convert ADC value to voltage
 float convert010V(int adc);
+void setVoltageLinearCalibration(float scale, float offset);
+void getVoltageLinearCalibration(float &scale, float &offset);
 
 // Convert ADC raw reading to millivolts using esp_adc_cal
 int adcRawToMv(int raw);
@@ -47,4 +49,3 @@ void setAdcNumSamples(int n);
 
 
 #endif // VOLTAGE_PRESSURE_SENSOR_H
-

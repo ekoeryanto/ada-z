@@ -2,6 +2,8 @@
 #include "pins_config.h" // For AI1_PIN
 #include "config.h"      // For EMA_ALPHA
 
+#include <math.h>
+
 #include "sensor_calibration_types.h" // For SensorCalibration struct
 
 #include "esp_adc_cal.h"
@@ -25,47 +27,41 @@ static int consecutiveSaturations[NUM_VOLTAGE_SENSORS];
 static SensorCalibration voltageSensorCalibrations[NUM_VOLTAGE_SENSORS];
 // Runtime-configurable ADC per-read sample count
 static int adcNumSamples = 3; // default
+// Linear correction applied after baseline 0..10 V mapping
+static float voltageLinearScale = 1.0f;
+static float voltageLinearOffset = 0.0f;
 
 float convert010V(int adc) {
-    // Convert raw ADC to millivolts using esp_adc_cal for best accuracy
-    int mv = esp_adc_cal_raw_to_voltage(adc, &adc_chars); // mV at ADC input (approx 0..3300)
+    if (adc < 0) adc = 0;
+    if (adc > 4095) adc = 4095;
 
-    // Allow divider voltage to be configured at runtime via NVS key adc_cfg/divider_mv
-    float divider_mv = loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
-    if (divider_mv <= 0.0f) divider_mv = 3300.0f;
+    constexpr float ADC_MAX_COUNT = 4095.0f;
+    float normalized = (float)adc / ADC_MAX_COUNT;
+    float voltage_v = normalized * 10.0f;
 
-    // Vadc is voltage seen by ADC (in volts)
-    float Vadc = (float)mv / 1000.0f; // ~0..3.3
+    float corrected_v = voltage_v * voltageLinearScale + voltageLinearOffset;
 
-    // Map measured ADC mV back to original 0..10V input using divider ratio
-    // Volt_input = mv * (10.0 / divider_mv)
-    float voltage_v = (float)mv * (10.0f / divider_mv);
+    if (corrected_v < 0.0f) corrected_v = 0.0f;
+    if (corrected_v > 10.0f) corrected_v = 10.0f;
+    return corrected_v;
+}
 
-    // Apply vendor-provided piecewise linear correction to improve linearity
-    // based on measured Vadc ranges in the sample code
-    float Vcal = 0.0f;
-
-    // Detect true 0 and true saturation robustly (avoid exact equality checks)
-    if (mv <= 0 || Vadc <= 0.0001f) {
-        Vcal = 0.0f;
-    } else {
-        // Consider ADC near full-scale as saturation: use small margin below divider_mv
-        const int SAT_MARGIN_MV = 4; // 4 mV margin
-        if (mv >= (int)(divider_mv) - SAT_MARGIN_MV || adc >= 4095) {
-            Vcal = 10.0f;
-        } else if (Vadc > 0.01f && Vadc <= 0.96f) {
-            Vcal = 1.0345f * voltage_v + 0.2897f;
-        } else if (Vadc > 0.96f && Vadc <= 1.52f) {
-            Vcal = 1.0029f * voltage_v + 0.3814f;
-        } else /* Vadc > 1.52 */ {
-            Vcal = 0.932f * voltage_v + 0.7083f;
-        }
+void setVoltageLinearCalibration(float scale, float offset) {
+    if (!isfinite(scale) || scale == 0.0f) {
+        scale = 1.0f;
     }
+    if (!isfinite(offset)) {
+        offset = 0.0f;
+    }
+    voltageLinearScale = scale;
+    voltageLinearOffset = offset;
+    saveFloatToNVSns("adc_cfg", "linear_scale", voltageLinearScale);
+    saveFloatToNVSns("adc_cfg", "linear_offset", voltageLinearOffset);
+}
 
-    // Clamp final value to 0..10 V
-    if (Vcal < 0.0f) Vcal = 0.0f;
-    if (Vcal > 10.0f) Vcal = 10.0f;
-    return Vcal;
+void getVoltageLinearCalibration(float &scale, float &offset) {
+    scale = voltageLinearScale;
+    offset = voltageLinearOffset;
 }
 
 int adcRawToMv(int raw) {
@@ -126,6 +122,18 @@ void initAdcCalibration() {
 }
 
 void loadVoltagePressureCalibration() {
+    float storedScale = loadFloatFromNVSns("adc_cfg", "linear_scale", voltageLinearScale);
+    if (!isfinite(storedScale) || storedScale == 0.0f) {
+        storedScale = 1.0f;
+    }
+    voltageLinearScale = storedScale;
+
+    float storedOffset = loadFloatFromNVSns("adc_cfg", "linear_offset", voltageLinearOffset);
+    if (!isfinite(storedOffset)) {
+        storedOffset = 0.0f;
+    }
+    voltageLinearOffset = storedOffset;
+
     // Migrate legacy calibration keys if present: check for OLD_* keys and copy to short keys
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
         String pinKey = String(VOLTAGE_SENSOR_PINS[i]);

@@ -17,6 +17,7 @@
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncJson.h>
+#include <math.h>
 
 // Need AsyncEventSource for SSE
 #include <AsyncEventSource.h>
@@ -321,6 +322,11 @@ void registerSensorHandlers(AsyncWebServer *server) {
         DynamicJsonDocument doc(128);
         doc["adc_num_samples"] = getAdcNumSamples();
         doc["samples_per_sensor"] = getSampleCapacity();
+        float scale = 1.0f;
+        float offset = 0.0f;
+        getVoltageLinearCalibration(scale, offset);
+        doc["linear_scale"] = scale;
+        doc["linear_offset"] = offset;
         sendCorsJsonDoc(request, 200, doc);
     });
 
@@ -346,6 +352,32 @@ void registerSensorHandlers(AsyncWebServer *server) {
                 saveFloatToNVSns("adc_cfg", "divider_mv", dv);
                 changed = true;
             }
+        }
+        bool linearChanged = false;
+        if (!doc["linear_scale"].isNull()) {
+            float sc = doc["linear_scale"].is<float>() ? doc["linear_scale"].as<float>() : (float)doc["linear_scale"].as<int>();
+            if (isfinite(sc) && sc != 0.0f) {
+                float curScale, curOffset;
+                getVoltageLinearCalibration(curScale, curOffset);
+                if (fabs(curScale - sc) > 0.0001f) {
+                    setVoltageLinearCalibration(sc, curOffset);
+                    linearChanged = true;
+                }
+            }
+        }
+        if (!doc["linear_offset"].isNull()) {
+            float off = doc["linear_offset"].is<float>() ? doc["linear_offset"].as<float>() : (float)doc["linear_offset"].as<int>();
+            if (isfinite(off)) {
+                float curScale, curOffset;
+                getVoltageLinearCalibration(curScale, curOffset);
+                if (fabs(curOffset - off) > 0.0001f) {
+                    setVoltageLinearCalibration(curScale, off);
+                    linearChanged = true;
+                }
+            }
+        }
+        if (linearChanged) {
+            changed = true;
         }
         if (changed) {
             DynamicJsonDocument resp(128);
