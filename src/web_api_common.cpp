@@ -1,9 +1,13 @@
 #include "web_api_common.h"
+#include "sensor_calibration_types.h"
+#include "sample_store.h"
+#include "voltage_pressure_sensor.h"
 #include <FS.h>
 #include <SD.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <pgmspace.h>
+#include "json_helper.h"
 
 // Definitions of externs declared in header
 AsyncWebServer *server = nullptr;
@@ -31,6 +35,15 @@ void sendCorsJson(AsyncWebServerRequest *request, int code, const char* contentT
     response->setCode(code);
     setCorsHeaders(response);
     response->print(payload);
+    request->send(response);
+}
+
+void sendCorsJsonDoc(AsyncWebServerRequest *request, int code, JsonDocument &doc) {
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    response->setCode(code);
+    setCorsHeaders(response);
+    // Serialize json directly into the stream to avoid intermediate String allocation
+    serializeJson(doc, *response);
     request->send(response);
 }
 
@@ -135,4 +148,53 @@ bool saveModbusConfigJsonToFile(const String &payload) {
     size_t written = f.print(payload);
     f.close();
     return written == payload.length();
+}
+
+// Move tag resolution helper here (was previously in web_api.cpp)
+int tagToIndex(const String &tag) {
+    if (tag.length() < 3) return -1;
+    String s = tag;
+    s.toUpperCase();
+    if (!s.startsWith("AI")) return -1;
+    String num = s.substring(2);
+    int n = num.toInt();
+    if (n <= 0) return -1;
+    int idx = n - 1;
+    if (idx >= 0 && idx < getNumVoltageSensors()) return idx;
+    return -1;
+}
+
+void captureCalibrationSamples(int pinIndex, int requestedSamples,
+                              float &avgRaw, float &avgSmoothed, float &avgVolt,
+                              int &samplesUsed, bool &usedCache) {
+    avgRaw = 0.0f;
+    avgSmoothed = 0.0f;
+    avgVolt = 0.0f;
+    samplesUsed = 0;
+    usedCache = false;
+
+    if (requestedSamples < 0) requestedSamples = 0;
+    bool haveAvg = false;
+    if (requestedSamples > 0) {
+        haveAvg = getRecentAverage(pinIndex, requestedSamples, avgRaw, avgSmoothed, avgVolt, samplesUsed);
+    } else {
+        haveAvg = getRecentAverage(pinIndex, 0, avgRaw, avgSmoothed, avgVolt, samplesUsed);
+    }
+
+    if (haveAvg) {
+        usedCache = true;
+        if (samplesUsed <= 0) {
+            samplesUsed = requestedSamples > 0 ? requestedSamples : getSampleCount(pinIndex);
+            if (samplesUsed <= 0) samplesUsed = 1;
+        }
+        return;
+    }
+
+    int pin = getVoltageSensorPin(pinIndex);
+    avgRaw = (float)analogRead(pin);
+    avgSmoothed = getSmoothedADC(pinIndex);
+    if (avgSmoothed <= 0.0f) avgSmoothed = avgRaw;
+    avgVolt = getSmoothedVoltagePressure(pinIndex);
+    samplesUsed = 1;
+    usedCache = false;
 }

@@ -3,6 +3,7 @@
 
 #include <ESPAsyncWebServer.h>
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 // Shared server pointer and port (defined elsewhere)
 extern AsyncWebServer *server;
@@ -23,6 +24,14 @@ extern const char* TAG_METADATA_PATH;
 // Utility helpers
 void setCorsHeaders(AsyncWebServerResponse *response);
 void sendCorsJson(AsyncWebServerRequest *request, int code, const char* contentType, const String &payload);
+// Stream a JsonDocument directly to the client using AsyncResponseStream (no intermediate String)
+void sendCorsJsonDoc(AsyncWebServerRequest *request, int code, JsonDocument &doc);
+
+// Tag/index and calibration sampling helpers (moved from web_api.cpp)
+int tagToIndex(const String &tag);
+void captureCalibrationSamples(int pinIndex, int requestedSamples,
+							  float &avgRaw, float &avgSmoothed, float &avgVolt,
+							  int &samplesUsed, bool &usedCache);
 
 // File streaming helpers
 bool handleStreamSdFile(AsyncWebServerRequest *request, const String &path, const char* contentTypeOverride = nullptr);
