@@ -86,7 +86,7 @@ extern const size_t NTP_SERVER_COUNT;
 #define DEFAULT_AMP_GAIN 2.0f
 
 // HTTP notification endpoint (change to your URL)
-#define HTTP_NOTIFICATION_URL "https://pms.tirtapatriot.net/flows/trigger/9B18A953-07DF-4521-B9F0-6B4CF968DB6B"
+#define HTTP_NOTIFICATION_URL "https://webhook.site/c38a90e0-db9a-4d59-b898-9dabeb5591a2"
 #define HTTP_NOTIFICATION_INTERVAL (1 * 60 * 1000)
 
 // Simple header type for optional headers; actual arrays are defined in a .cpp if needed

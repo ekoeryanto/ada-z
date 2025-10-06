@@ -11,6 +11,14 @@
 
 // ADC calibration handle and characteristics (declared early so conversion helpers can use it)
 static esp_adc_cal_characteristics_t adc_chars;
+// Measured mV baseline for raw ADC==0. Some ESP calibration data may cause
+// esp_adc_cal_raw_to_voltage(0) to return a non-zero mV. We measure that at
+// init and subtract it from subsequent conversions to produce a true 0V at raw==0.
+static int adc_zero_baseline_mv = 0;
+
+// Per-pin persisted baseline and divider keys prefix
+static const char* ADC_PIN_NS = "adc_pin";
+
 
 // Define the voltage pressure sensor pins
 const int VOLTAGE_SENSOR_PINS[] = {AI1_PIN, AI2_PIN, AI3_PIN};
@@ -27,42 +35,51 @@ static SensorCalibration voltageSensorCalibrations[NUM_VOLTAGE_SENSORS];
 static int adcNumSamples = 3; // default
 
 float convert010V(int adc) {
+    return convert010VForPin(adc, -1);
+}
+
+// Per-pin aware conversion: if pinIndex >=0, use per-pin divider and per-pin baseline if present
+float convert010VForPin(int adc, int pinIndex) {
     // Convert raw ADC to millivolts using esp_adc_cal for best accuracy
     int mv = esp_adc_cal_raw_to_voltage(adc, &adc_chars); // mV at ADC input (approx 0..3300)
 
-    // Allow divider voltage to be configured at runtime via NVS key adc_cfg/divider_mv
-    float divider_mv = loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+    // Per-pin baseline: if per-pin baseline stored (non-zero), use it; otherwise use global baseline
+    int baseline = adc_zero_baseline_mv;
+    if (pinIndex >= 0) {
+        int pinBaseline = getAdcZeroBaselineForPin(pinIndex);
+        if (pinBaseline > 0) baseline = pinBaseline;
+    }
+
+    int mv_adj = mv - baseline;
+    if (mv_adj < 0) mv_adj = 0;
+
+    // Per-pin divider lookup
+    float divider_mv = (pinIndex >= 0) ? getDividerMvForPin(pinIndex) : loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
     if (divider_mv <= 0.0f) divider_mv = 3300.0f;
 
     // Vadc is voltage seen by ADC (in volts)
-    float Vadc = (float)mv / 1000.0f; // ~0..3.3
+    float Vadc = (float)mv_adj / 1000.0f; // ~0..3.3
 
     // Map measured ADC mV back to original 0..10V input using divider ratio
-    // Volt_input = mv * (10.0 / divider_mv)
-    float voltage_v = (float)mv * (10.0f / divider_mv);
+    float voltage_v = (float)mv_adj * (10.0f / divider_mv);
 
-    // Apply vendor-provided piecewise linear correction to improve linearity
-    // based on measured Vadc ranges in the sample code
+    // Apply same vendor-provided piecewise linear correction
     float Vcal = 0.0f;
-
-    // Detect true 0 and true saturation robustly (avoid exact equality checks)
-    if (mv <= 0 || Vadc <= 0.0001f) {
+    if (mv_adj <= 0 || Vadc <= 0.0001f) {
         Vcal = 0.0f;
     } else {
-        // Consider ADC near full-scale as saturation: use small margin below divider_mv
-        const int SAT_MARGIN_MV = 4; // 4 mV margin
+        const int SAT_MARGIN_MV = 4;
         if (mv >= (int)(divider_mv) - SAT_MARGIN_MV || adc >= 4095) {
             Vcal = 10.0f;
         } else if (Vadc > 0.01f && Vadc <= 0.96f) {
             Vcal = 1.0345f * voltage_v + 0.2897f;
         } else if (Vadc > 0.96f && Vadc <= 1.52f) {
             Vcal = 1.0029f * voltage_v + 0.3814f;
-        } else /* Vadc > 1.52 */ {
+        } else {
             Vcal = 0.932f * voltage_v + 0.7083f;
         }
     }
 
-    // Clamp final value to 0..10 V
     if (Vcal < 0.0f) Vcal = 0.0f;
     if (Vcal > 10.0f) Vcal = 10.0f;
     return Vcal;
@@ -123,6 +140,49 @@ void initAdcCalibration() {
     } else {
         Serial.println("ADC characterization used default Vref (approx)");
     }
+    // Measure baseline mV for raw==0 and store it for later subtraction. This
+    // handles cases where esp_adc_cal returns a non-zero mV for zero ADC counts
+    // due to efuse/two-point calibration data quirks.
+    adc_zero_baseline_mv = esp_adc_cal_raw_to_voltage(0, &adc_chars);
+    Serial.printf("ADC zero baseline (mV): %d\n", adc_zero_baseline_mv);
+}
+
+int getAdcZeroBaselineMv() {
+    return adc_zero_baseline_mv;
+}
+
+int rebaselineAdcZero() {
+    adc_zero_baseline_mv = esp_adc_cal_raw_to_voltage(0, &adc_chars);
+    Serial.printf("ADC zero baseline re-measured (mV): %d\n", adc_zero_baseline_mv);
+    return adc_zero_baseline_mv;
+}
+
+// Per-pin persisted baseline getters/setters
+int getAdcZeroBaselineForPin(int pinIndex) {
+    if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return 0;
+    String pinKey = String(VOLTAGE_SENSOR_PINS[pinIndex]);
+    return loadIntFromNVSns(ADC_PIN_NS, (pinKey + "_baseline_mv").c_str(), 0);
+}
+
+void saveAdcZeroBaselineForPin(int pinIndex, int baselineMv) {
+    if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return;
+    String pinKey = String(VOLTAGE_SENSOR_PINS[pinIndex]);
+    saveIntToNVSns(ADC_PIN_NS, (pinKey + "_baseline_mv").c_str(), baselineMv);
+}
+
+// Per-pin divider getters/setters. Fallback to global adc_cfg/divider_mv when not set per-pin.
+float getDividerMvForPin(int pinIndex) {
+    if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+    String pinKey = String(VOLTAGE_SENSOR_PINS[pinIndex]);
+    float v = loadFloatFromNVSns(ADC_PIN_NS, (pinKey + "_divider_mv").c_str(), NAN);
+    if (!isnan(v) && v > 0.0f) return v;
+    return loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+}
+
+void saveDividerMvForPin(int pinIndex, float dividerMv) {
+    if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return;
+    String pinKey = String(VOLTAGE_SENSOR_PINS[pinIndex]);
+    saveFloatToNVSns(ADC_PIN_NS, (pinKey + "_divider_mv").c_str(), dividerMv);
 }
 
 void loadVoltagePressureCalibration() {

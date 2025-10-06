@@ -5,6 +5,8 @@
 
 // Function to convert ADC value to voltage
 float convert010V(int adc);
+// Per-pin aware conversion helper
+float convert010VForPin(int adc, int pinIndex);
 
 // Convert ADC raw reading to millivolts using esp_adc_cal
 int adcRawToMv(int raw);
@@ -32,6 +34,20 @@ void setupVoltagePressureSensor();
 
 // Initialize ADC characterization (esp_adc_cal) for accurate mV conversion
 void initAdcCalibration();
+
+// Return the measured baseline mV for raw==0 (subtracted from conversions)
+int getAdcZeroBaselineMv();
+
+// Re-measure the ADC zero baseline at runtime and return the new baseline (mV)
+int rebaselineAdcZero();
+
+// Per-pin baseline persistence: get/set measured baseline for a given sensor index
+int getAdcZeroBaselineForPin(int pinIndex);
+void saveAdcZeroBaselineForPin(int pinIndex, int baselineMv);
+
+// Per-pin divider persistence (divider_mv maps 10V input -> mv seen by ADC)
+float getDividerMvForPin(int pinIndex);
+void saveDividerMvForPin(int pinIndex, float dividerMv);
 
 // Function to update voltage pressure sensor reading for a specific sensor (to be called in loop)
 void updateVoltagePressureSensor(int pinIndex);

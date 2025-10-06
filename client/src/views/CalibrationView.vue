@@ -61,18 +61,36 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
-              <tr v-for="sensor in sensors" :key="sensor.id">
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.id }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.port }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_raw_adc }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.span_raw_adc }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_pressure_value }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.span_pressure_value }}</td>
-                <td class="px-4 py-2 text-sm text-slate-300">
-                  <button @click="editSensor(sensor)" class="text-blue-500">Edit</button>
-                  <button @click="resetSensor(sensor)" class="ml-4 text-red-500">Reset</button>
-                </td>
-              </tr>
+              <template v-for="sensor in sensors" :key="sensor.id">
+                <tr>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.id }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.port }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_raw_adc }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.span_raw_adc }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.zero_pressure_value }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">{{ sensor.span_pressure_value }}</td>
+                  <td class="px-4 py-2 text-sm text-slate-300">
+                    <button @click="editSensor(sensor)" class="text-blue-500">Edit</button>
+                    <button @click="resetSensor(sensor)" class="ml-4 text-red-500">Reset</button>
+                    <button @click="toggleDebug(sensor)" class="ml-4 text-amber-400">Debug</button>
+                  </td>
+                </tr>
+                <tr v-if="debugVisible[sensor.id]" :key="sensor.id + '-debug'">
+                  <td colspan="7" class="px-4 py-2 bg-slate-800">
+                    <div class="flex items-center gap-4 mb-2">
+                      <button @click="doRebaseline(sensor)" class="text-green-400">Rebaseline</button>
+                      <button @click="(async () => { debugData[sensor.id]=null; debugData[sensor.id]=await debugAdc({ tag: sensor.id }); })()" class="text-sky-400">Refresh</button>
+                      <button @click="saveBaselineClick(sensor)" class="text-amber-300">Save Baseline</button>
+                      <div class="flex items-center space-x-2">
+                        <input v-model="vinTargets[sensor.id]" placeholder="Vin (V)" class="w-20 text-slate-200 bg-slate-900 px-2 py-1 text-sm" />
+                        <input v-model.number="vinSamples[sensor.id]" placeholder="Samples" class="w-20 text-slate-200 bg-slate-900 px-2 py-1 text-sm" />
+                        <button @click="autoCalcClick(sensor)" class="text-indigo-300">Auto-calc Divider</button>
+                      </div>
+                    </div>
+                    <pre class="text-xs text-slate-300 whitespace-pre-wrap">{{ debugData[sensor.id] ? JSON.stringify(debugData[sensor.id], null, 2) : 'Loading...' }}</pre>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -89,7 +107,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import { fetchCalibrationAll, fetchSensorReadings, resetCalibrationPin, autoCalibrateAdc, autoCalibrateAds } from '../services/api';
+import { fetchCalibrationAll, fetchSensorReadings, resetCalibrationPin, autoCalibrateAdc, autoCalibrateAds, debugAdc, rebaselineAdc, saveAdcBaselineForTag, autoCalcDividerForTag } from '../services/api';
 import CalibrationModal from '../components/CalibrationModal.vue';
 
 const loading = ref(true);
@@ -100,6 +118,10 @@ const isModalOpen = ref(false);
 const selectedSensor = ref(null);
 const adcTargets = ref({});
 const adsTargets = ref({});
+const debugVisible = ref({});
+const debugData = ref({});
+const vinTargets = ref({});
+const vinSamples = ref({});
 
 const allSensors = computed(() => {
   if (!sensorReadings.value || !sensorReadings.value.tags) return [];
@@ -156,7 +178,7 @@ async function resetSensor(sensor) {
 async function runAdcAutoCalibration(sensor) {
   const target = adcTargets.value[sensor.id];
   if (target === undefined) {
-    alert('Please provide a target value.');
+    window.alert('Please provide a target value.');
     return;
   }
   if (!confirm(`Are you sure you want to run auto-calibration for ${sensor.id} with target ${target} bar?`)) {
@@ -173,7 +195,7 @@ async function runAdcAutoCalibration(sensor) {
 async function runAdsAutoCalibration(sensor) {
   const target = adsTargets.value[sensor.id];
   if (target === undefined) {
-    alert('Please provide a target value.');
+    window.alert('Please provide a target value.');
     return;
   }
   if (!confirm(`Are you sure you want to run auto-calibration for ${sensor.id} with target ${target} bar?`)) {
@@ -190,6 +212,71 @@ async function runAdsAutoCalibration(sensor) {
 function handleSaved() {
   isModalOpen.value = false;
   fetchData();
+}
+
+// Handler for Save Baseline button
+async function saveBaselineClick(sensor) {
+  try {
+    const resp = await saveAdcBaselineForTag({ tag: sensor.id });
+    // use window.alert to avoid Vue resolving alert to _ctx
+    window.alert(JSON.stringify(resp));
+    if (debugVisible.value[sensor.id]) {
+      debugData.value[sensor.id] = null;
+      debugData.value[sensor.id] = await debugAdc({ tag: sensor.id });
+    }
+  } catch (err) {
+    window.alert(`Save baseline failed: ${err.message || String(err)}`);
+  }
+}
+
+// Handler for Auto-calc Divider button
+async function autoCalcClick(sensor) {
+  try {
+    const vin = parseFloat(vinTargets.value[sensor.id]);
+    if (!vin || isNaN(vin)) { window.alert('Please provide Vin'); return; }
+  const samples = vinSamples.value[sensor.id] ? Math.max(1, Math.min(100, vinSamples.value[sensor.id])) : 1;
+  const resp = await autoCalcDividerForTag({ tag: sensor.id, vin, samples });
+    window.alert(JSON.stringify(resp));
+    if (debugVisible.value[sensor.id]) {
+      debugData.value[sensor.id] = null;
+      debugData.value[sensor.id] = await debugAdc({ tag: sensor.id });
+    }
+  } catch (err) {
+    window.alert(`Auto-calc failed: ${err.message || String(err)}`);
+  }
+}
+
+async function toggleDebug(sensor) {
+  const id = sensor.id;
+  // Toggle visibility
+  debugVisible.value[id] = !debugVisible.value[id];
+  if (!debugVisible.value[id]) return;
+  // If we already have data, keep it; otherwise fetch
+  if (debugData.value[id]) return;
+  try {
+    debugData.value[id] = null; // loading state
+    const resp = await debugAdc({ tag: id });
+    debugData.value[id] = resp;
+  } catch (err) {
+    debugData.value[id] = { error: err.message || String(err) };
+  }
+}
+
+async function doRebaseline(sensor) {
+  try {
+    // Call rebaseline API
+    const resp = await rebaselineAdc();
+    // Update debug panel for this sensor if visible
+    if (debugVisible.value[sensor.id]) {
+      // fetch fresh debug data
+      debugData.value[sensor.id] = null;
+      const fresh = await debugAdc({ tag: sensor.id });
+      debugData.value[sensor.id] = fresh;
+    }
+    window.alert(`Rebaseline complete: ${JSON.stringify(resp)}`);
+  } catch (err) {
+    window.alert(`Rebaseline failed: ${err.message || String(err)}`);
+  }
 }
 
 onMounted(fetchData);

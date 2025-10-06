@@ -16,6 +16,17 @@ struct ModbusSensorData {
     uint8_t last_error;
     unsigned long last_update_ms;
     float max_distance_m;
+    struct ModbusRegister {
+        String id;        // unique id used for DB storage (e.g. MB201_distance)
+        String name;      // human-friendly name (e.g. "distance")
+        String unit;      // unit string (e.g. "mm", "C")
+        float raw;        // raw/unfiltered value
+        float filtered;   // filtered / smoothed value if applicable
+        bool valid;       // whether value is valid
+    };
+
+    // Generic per-register readings (kept in a stable order for legacy sensors)
+    std::vector<ModbusRegister> registers;
 };
 
 void setupModbus();

@@ -137,3 +137,23 @@ export function autoCalibrateAds(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function debugAdc(params) {
+  // params: { tag: 'AI3' } or { pin: 36 } or { index: 2 }
+  const qs = new URLSearchParams(params).toString();
+  return request(`/debug/adc?${qs}`);
+}
+
+export function rebaselineAdc() {
+  return request('/adc/rebaseline', { method: 'POST' });
+}
+
+export function saveAdcBaselineForTag(params) {
+  // params: { tag: 'AI3' } or { pin: 36 } or { pinIndex: 2, baseline_mv: 142 }
+  return request('/adc/baseline/save', { method: 'POST', body: JSON.stringify(params) });
+}
+
+export function autoCalcDividerForTag(params) {
+  // params: { tag: 'AI3', vin: 1.1 } or { pin: 36, vin: 1.1 }
+  return request('/adc/divider/auto', { method: 'POST', body: JSON.stringify(params), timeoutMs: 12000 });
+}

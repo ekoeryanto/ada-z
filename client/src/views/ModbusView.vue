@@ -142,6 +142,30 @@
               </div>
             </div>
 
+            <details class="mt-3 rounded-lg border border-slate-800/60 bg-slate-950/40 p-3 text-xs">
+              <summary class="cursor-pointer font-medium text-slate-200">Advanced: custom registers</summary>
+              <div class="mt-3 space-y-2">
+                <div v-if="!slave.registers || slave.registers.length === 0" class="text-xs text-slate-400">No custom registers defined. Add one to configure arbitrary registers (32-bit, floats, scaling).</div>
+                <div v-for="(reg, ri) in (slave.registers || [])" :key="reg.localId || ri" class="grid grid-cols-6 gap-2 items-center text-xs">
+                  <input v-model.trim="reg.id" placeholder="id (MB201_dist)" class="col-span-1 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1" />
+                  <input v-model.trim="reg.name" placeholder="name" class="col-span-1 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1" />
+                  <input v-model.trim="reg.unit" placeholder="unit" class="col-span-1 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1" />
+                  <input v-model.number="reg.reg" type="number" placeholder="reg" class="col-span-1 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1" />
+                  <select v-model.number="reg.count" class="col-span-1 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1">
+                    <option :value="1">1</option>
+                    <option :value="2">2</option>
+                  </select>
+                  <div class="col-span-1 flex items-center gap-2">
+                    <input v-model.number="reg.scale" type="number" step="any" placeholder="scale" class="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1 w-24" />
+                    <button @click.prevent="removeRegister(slaves.indexOf(slave), ri)" class="rounded-full bg-rose-500/20 px-2 py-1 text-rose-100">Remove</button>
+                  </div>
+                </div>
+                <div class="mt-2">
+                  <button @click.prevent="addRegister(slaves.indexOf(slave))" class="inline-flex items-center gap-2 rounded-full border border-brand-600 bg-brand-500/20 px-3 py-1 text-xs text-brand-100">Add register</button>
+                </div>
+              </div>
+            </details>
+
             <label class="grid gap-2">
               <span class="text-xs uppercase tracking-wide text-slate-400">Jarak maksimum (meter)</span>
               <input
@@ -234,6 +258,18 @@ function applyConfigObject(obj) {
       temperature_reg: Number.isInteger(item?.temperature_reg) ? item.temperature_reg : 2,
       signal_reg: Number.isInteger(item?.signal_reg) ? item.signal_reg : 3,
       max_distance_m: Number.isFinite(item?.max_distance_m) ? Number(item.max_distance_m) : 10,
+      // map optional registers[] if present
+      registers: Array.isArray(item?.registers) ? item.registers.map((r) => ({
+        localId: generateLocalId(),
+        id: typeof r?.id === 'string' ? r.id : '',
+        name: typeof r?.name === 'string' ? r.name : '',
+        unit: typeof r?.unit === 'string' ? r.unit : '',
+        reg: Number.isInteger(r?.reg) ? r.reg : -1,
+        count: Number.isInteger(r?.count) ? r.count : 1,
+        type: Number.isInteger(r?.type) ? r.type : 0,
+        scale: Number.isFinite(r?.scale) ? Number(r.scale) : 1,
+        ema_alpha: Number.isFinite(r?.ema_alpha) ? Number(r.ema_alpha) : 0,
+      })) : [],
     });
   });
 }
@@ -283,10 +319,33 @@ function removeSlave(index) {
   slaves.splice(index, 1);
 }
 
+function addRegister(slaveIndex) {
+  if (slaveIndex < 0 || slaveIndex >= slaves.length) return;
+  const reg = {
+    localId: generateLocalId(),
+    id: '',
+    name: '',
+    unit: '',
+    reg: 0,
+    count: 1,
+    type: 0,
+    scale: 1,
+    ema_alpha: 0,
+  };
+  if (!Array.isArray(slaves[slaveIndex].registers)) slaves[slaveIndex].registers = [];
+  slaves[slaveIndex].registers.push(reg);
+}
+
+function removeRegister(slaveIndex, regIndex) {
+  if (slaveIndex < 0 || slaveIndex >= slaves.length) return;
+  if (!Array.isArray(slaves[slaveIndex].registers)) return;
+  slaves[slaveIndex].registers.splice(regIndex, 1);
+}
+
 function buildPayload() {
   const payloadSlaves = slaves.map((slave) => {
     const sanitizedId = slave.id && slave.id.trim().length ? slave.id.trim() : `MB${slave.address}`;
-    return {
+    const base = {
       id: sanitizedId,
       label: slave.label?.trim?.() ?? '',
       address: Number(slave.address),
@@ -295,6 +354,19 @@ function buildPayload() {
       signal_reg: Number(slave.signal_reg),
       max_distance_m: Number(slave.max_distance_m),
     };
+    if (Array.isArray(slave.registers) && slave.registers.length > 0) {
+      base.registers = slave.registers.map((r) => ({
+        id: r.id && r.id.trim().length ? r.id.trim() : undefined,
+        name: r.name && r.name.trim().length ? r.name.trim() : undefined,
+        unit: r.unit && r.unit.trim().length ? r.unit.trim() : undefined,
+        reg: Number.isInteger(r.reg) ? r.reg : -1,
+        count: Number.isInteger(r.count) ? r.count : 1,
+        type: Number.isInteger(r.type) ? r.type : 0,
+        scale: Number.isFinite(r.scale) ? Number(r.scale) : 1,
+        ema_alpha: Number.isFinite(r.ema_alpha) ? Number(r.ema_alpha) : 0,
+      }));
+    }
+    return base;
   });
   return {
     version: version.value,

@@ -56,22 +56,22 @@ const fetchConfig = async () => {
 };
 
 const saveConfig = async () => {
-  try {
+    try {
     await saveNotificationsConfig(config.value);
-    alert('Configuration saved successfully!');
+    window.alert('Configuration saved successfully!');
   } catch (error) {
     console.error('Error saving notification config:', error);
-    alert('Failed to save configuration.');
+    window.alert('Failed to save configuration.');
   }
 };
 
 const triggerNotification = async () => {
-  try {
+    try {
     await triggerBatchNotification();
-    alert('Batch notification triggered successfully!');
+    window.alert('Batch notification triggered successfully!');
   } catch (error) {
     console.error('Error triggering notification:', error);
-    alert('Failed to trigger notification.');
+    window.alert('Failed to trigger notification.');
   }
 };
 

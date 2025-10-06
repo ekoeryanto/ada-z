@@ -233,14 +233,15 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
         a["unit"] = "bar";
     }
 
-    // Modbus sensors -> value = distance in millimeters (or null)
+    // Modbus sensors -> include legacy distance value plus new registers[] array
     const auto &modbusSensors = getModbusSensors();
     for (const auto &mb : modbusSensors) {
         JsonObject m = arr.add<JsonObject>();
         m["id"] = mb.id.length() ? mb.id : String("MB") + String(mb.address);
         m["source"] = "modbus";
         m["enabled"] = mb.online ? 1 : 0;
-        
+
+        // Legacy compact value (distance in mm) kept for backwards compatibility
         JsonObject val = m.createNestedObject("value");
         if (!isnan(mb.distance_mm)) {
             val["raw"] = roundToDecimals(mb.distance_mm, 0);
@@ -253,6 +254,18 @@ void sendHttpNotificationBatch(int numSensors, int sensorIndices[], int rawADC[]
             val["filtered"] = nullptr;
         }
         m["unit"] = "mm";
+
+        // New: include per-register array for consumers that need per-register IDs and values
+        JsonArray regs = m["registers"].to<JsonArray>();
+        for (const auto &r : mb.registers) {
+            JsonObject jr = regs.add<JsonObject>();
+            jr["id"] = r.id.length() ? r.id : String(mb.id) + String("_") + r.name;
+            jr["name"] = r.name;
+            jr["unit"] = r.unit;
+            if (!isnan(r.raw)) jr["raw"] = r.raw; else jr["raw"] = nullptr;
+            if (!isnan(r.filtered)) jr["filtered"] = r.filtered; else jr["filtered"] = nullptr;
+            jr["valid"] = r.valid ? 1 : 0;
+        }
     }
 
     doc["tags_total"] = arr.size();

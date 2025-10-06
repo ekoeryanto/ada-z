@@ -123,6 +123,10 @@ const adcPanels = computed(() => {
           value: converted.raw != null ? `${Number(converted.raw).toFixed(2)} bar` : '—',
         },
         {
+          label: 'Voltage (raw)',
+          value: scaled.raw != null ? `${Number(scaled.raw).toFixed(2)} V` : '—',
+        },
+        {
           label: 'Voltage',
           value: scaled.filtered != null ? `${Number(scaled.filtered).toFixed(2)} V` : '—',
         },

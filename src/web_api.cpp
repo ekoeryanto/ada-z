@@ -295,7 +295,11 @@ static bool saveTagMetadataJson(const String &payload) {
 }
 
 static const char* MODBUS_CONFIG_PATH = "/modbus.json";
+// NVS namespace/key for fallback persistence when SD is unavailable
+static const char* MODBUS_NVS_NS = "modbus";
+static const char* MODBUS_NVS_KEY = "config";
 
+// Try to load modbus config from SD first; if not available, attempt NVS; otherwise return default
 static String loadModbusConfigJsonFromFile() {
     if (sdReady && SD.exists(MODBUS_CONFIG_PATH)) {
         File f = SD.open(MODBUS_CONFIG_PATH, FILE_READ);
@@ -311,9 +315,15 @@ static String loadModbusConfigJsonFromFile() {
             }
         }
     }
+
+    // Fallback: try NVS
+    String fromNvs = loadStringFromNVSns(MODBUS_NVS_NS, MODBUS_NVS_KEY, String());
+    if (fromNvs.length() > 0) return fromNvs;
+
     return getDefaultModbusConfigJson();
 }
 
+// Save to SD only (used when SD is available)
 static bool saveModbusConfigJsonToFile(const String &payload) {
     if (!sdReady) return false;
     if (SD.exists(MODBUS_CONFIG_PATH)) {
@@ -324,6 +334,15 @@ static bool saveModbusConfigJsonToFile(const String &payload) {
     size_t written = f.print(payload);
     f.close();
     return written == payload.length();
+}
+
+// Save to NVS namespace as fallback persistent storage
+static bool saveModbusConfigJsonToNVS(const String &payload) {
+    // reuse existing NVS helper; it writes the string to NVS but returns void.
+    // We optimistically return true after calling it. If a more robust check is
+    // required, storage_helpers can be extended to return status.
+    saveStringToNVSns(MODBUS_NVS_NS, MODBUS_NVS_KEY, payload);
+    return true;
 }
 
 static const char* contentTypeFromPath(const String &path) {
@@ -981,31 +1000,45 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
-        bool persisted = false;
-        bool saveAttempted = false;
+        bool persistedSd = false;
+        bool persistedNvs = false;
+        bool attemptedSd = false;
+
+        // Attempt SD first
         if (sdReady) {
-            saveAttempted = true;
-            persisted = saveModbusConfigJsonToFile(getModbusConfigJson());
+            attemptedSd = true;
+            persistedSd = saveModbusConfigJsonToFile(getModbusConfigJson());
+        }
+
+        // If SD not ready or SD save failed, fallback to NVS
+        if (!persistedSd) {
+            persistedNvs = saveModbusConfigJsonToNVS(getModbusConfigJson());
         }
 
         JsonDocument resp;
-        resp["status"] = persisted ? "success" : (sdReady ? "warning" : "accepted");
-        resp["persisted"] = persisted ? 1 : 0;
-        if (!sdReady && !persisted) {
-            resp["message"] = "Configuration applied but SD card is not available";
-        } else if (sdReady && !persisted) {
-            resp["message"] = "Configuration applied but failed to persist to SD";
+        if (persistedSd) {
+            resp["status"] = "success";
+            resp["persisted_to"] = "sd";
+            resp["persisted"] = 1;
+            resp["message"] = "Modbus configuration updated and saved to SD";
+        } else if (persistedNvs) {
+            resp["status"] = "success";
+            resp["persisted_to"] = "nvs";
+            resp["persisted"] = 1;
+            resp["message"] = "Modbus configuration updated and saved to NVS (SD unavailable)";
         } else {
-            resp["message"] = "Modbus configuration updated";
+            resp["status"] = "warning";
+            resp["persisted"] = 0;
+            resp["message"] = attemptedSd ? "Configuration applied but failed to persist to SD/NVS" : "Configuration applied but failed to persist to NVS";
         }
-        if (!saveAttempted) {
-            resp["sd_ready"] = sdReady ? 1 : 0;
-        }
+
+        resp["sd_ready"] = sdReady ? 1 : 0;
         resp["config"] = json;
 
         String response;
         serializeJson(resp, response);
-        sendCorsJson(request, persisted ? 200 : 202, "application/json", response);
+        int code = (resp["persisted"].as<int>() == 1) ? 200 : 202;
+        sendCorsJson(request, code, "application/json", response);
     });
     modbusConfigHandler->setMaxContentLength(4096);
     server->addHandler(modbusConfigHandler);
@@ -1471,6 +1504,84 @@ void setupWebServer(int port /*= 80*/) {
     // Delegate pin-level calibration to existing handler so both paths behave the same
     server->on("/api/adc/calibrate/pin", HTTP_GET, handleCalibrateGet);
 
+    // Runtime rebaseline endpoint: re-measure ADC zero baseline (esp_adc_cal_raw_to_voltage(0))
+    server->on("/api/adc/rebaseline", HTTP_POST, [](AsyncWebServerRequest *request) {
+        int new_baseline = rebaselineAdcZero();
+        JsonDocument resp;
+        resp["status"] = "ok";
+        resp["adc_zero_baseline_mv"] = new_baseline;
+        String out; serializeJson(resp, out);
+        sendCorsJson(request, 200, "application/json", out);
+    });
+
+    // Save current global baseline to per-pin stored baseline (or save explicit baseline if provided)
+    AsyncCallbackJsonWebHandler* adcSaveBaselineHandler = new AsyncCallbackJsonWebHandler("/api/adc/baseline/save", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        JsonObject doc = json.as<JsonObject>();
+        if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+        int pinIndex = -1;
+        if (!doc["tag"].isNull()) pinIndex = tagToIndex(doc["tag"].as<String>());
+        else if (!doc["pin"].isNull()) pinIndex = findVoltageSensorIndexByPin(doc["pin"].as<int>());
+        if (pinIndex < 0) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Missing/unknown tag or pin\"}"); return; }
+
+        // If baseline value provided explicitly, use it; otherwise use global measured baseline
+        int baselineToSave = 0;
+        if (!doc["baseline_mv"].isNull()) {
+            baselineToSave = doc["baseline_mv"].as<int>();
+        } else {
+            baselineToSave = getAdcZeroBaselineMv();
+        }
+        saveAdcZeroBaselineForPin(pinIndex, baselineToSave);
+        JsonDocument resp; resp["status"] = "ok"; resp["pin_index"] = pinIndex; resp["adc_zero_baseline_mv"] = baselineToSave;
+        String out; serializeJson(resp, out); sendCorsJson(request, 200, "application/json", out);
+    });
+    adcSaveBaselineHandler->setMaxContentLength(256);
+    server->addHandler(adcSaveBaselineHandler);
+
+    // Auto-calc divider for a specific pin using provided known Vin (in volts). Saves per-pin divider.
+    AsyncCallbackJsonWebHandler* adcAutoDividerHandler = new AsyncCallbackJsonWebHandler("/api/adc/divider/auto", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        JsonObject doc = json.as<JsonObject>();
+        if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+        int pinIndex = -1;
+        if (!doc["tag"].isNull()) pinIndex = tagToIndex(doc["tag"].as<String>());
+        else if (!doc["pin"].isNull()) pinIndex = findVoltageSensorIndexByPin(doc["pin"].as<int>());
+        if (pinIndex < 0) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Missing/unknown tag or pin\"}"); return; }
+        if (doc["vin"].isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Missing vin (volts)\"}"); return; }
+        float vin = doc["vin"].is<float>() ? doc["vin"].as<float>() : (float)doc["vin"].as<int>();
+
+        int pin = getVoltageSensorPin(pinIndex);
+        // Optional samples parameter to average N readings here
+        int samples = 1;
+        if (!doc["samples"].isNull()) {
+            samples = doc["samples"].as<int>();
+            if (samples < 1) samples = 1;
+            if (samples > 100) samples = 100;
+        }
+        int raw_avg = 0;
+        if (samples == 1) raw_avg = analogRead(pin);
+        else {
+            const int SAMPLE_DELAY_MS = 2;
+            long sum = 0;
+            for (int i = 0; i < samples; ++i) { sum += analogRead(pin); delay(SAMPLE_DELAY_MS); }
+            raw_avg = (int)(sum / samples);
+        }
+    int mv_smoothed = adcRawToMv(raw_avg);
+    int perPinBaseline = getAdcZeroBaselineForPin(pinIndex);
+    int baseline = perPinBaseline > 0 ? perPinBaseline : getAdcZeroBaselineMv();
+    int mv_adj = mv_smoothed - baseline; if (mv_adj < 1) mv_adj = 1; // avoid division by zero
+
+        // Compute effective divider_mv such that vin -> mv_adj: divider_mv = mv_adj * 10 / vin
+        float divider_mv = ((float)mv_adj * 10.0f) / vin;
+        if (divider_mv <= 0.0f) { sendCorsJson(request, 500, "application/json", "{\"status\":\"error\",\"message\":\"Computed invalid divider\"}"); return; }
+
+        // Save per-pin divider
+        saveDividerMvForPin(pinIndex, divider_mv);
+
+        JsonDocument resp; resp["status"] = "ok"; resp["pin_index"] = pinIndex; resp["divider_mv"] = roundToDecimals(divider_mv, 2); resp["mv_smoothed"] = mv_smoothed; resp["mv_adj"] = mv_adj;
+        String out; serializeJson(resp, out); sendCorsJson(request, 200, "application/json", out);
+    });
+    adcAutoDividerHandler->setMaxContentLength(256);
+    server->addHandler(adcAutoDividerHandler);
+
     // Auto-calibration under /adc prefix: apply span using current smoothed ADC readings
     AsyncCallbackJsonWebHandler* adcAutoCalHandler = new AsyncCallbackJsonWebHandler("/api/adc/calibrate/auto", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
@@ -1902,10 +2013,27 @@ void setupWebServer(int port /*= 80*/) {
             if (raw == 4095 && !saturated) raw_effective = (int)round(smoothed);
             float voltage_smoothed_v = convert010V(round(smoothed));
             struct SensorCalibration cal = getCalibrationForPin(i);
-            float pressure_from_raw = (raw_effective * cal.scale) + cal.offset;
-            // Always compute pressure from the smoothed ADC value (filtered) for consistency
-            float pressure_from_smoothed = (round(smoothed) * cal.scale) + cal.offset;
-            // Use the pressure_from_smoothed as the authoritative converted.value
+            // Compute pressure by mapping measured voltages using per-sensor calibration
+            // This mirrors the path used by getSmoothedVoltagePressure() and ensures
+            // the reported 'scaled' voltage and 'converted' pressure are consistent.
+            float voltage_raw_v = convert010V(raw_effective);
+            float voltageAtZeroPoint = convert010V((int)cal.zeroRawAdc);
+            float voltageAtSpanPoint = convert010V((int)cal.spanRawAdc);
+            float pressure_from_raw = 0.0f;
+            float pressure_from_smoothed = 0.0f;
+            if (fabs(voltageAtSpanPoint - voltageAtZeroPoint) < 0.0001f) {
+                // Fallback: if calibration invalid, fall back to simple raw-count scaling
+                pressure_from_raw = (raw_effective * cal.scale) + cal.offset;
+                pressure_from_smoothed = (round(smoothed) * cal.scale) + cal.offset;
+            } else {
+                pressure_from_raw = cal.zeroPressureValue + (voltage_raw_v - voltageAtZeroPoint) * 
+                                     (cal.spanPressureValue - cal.zeroPressureValue) / 
+                                     (voltageAtSpanPoint - voltageAtZeroPoint);
+                pressure_from_smoothed = cal.zeroPressureValue + (voltage_smoothed_v - voltageAtZeroPoint) * 
+                                         (cal.spanPressureValue - cal.zeroPressureValue) / 
+                                         (voltageAtSpanPoint - voltageAtZeroPoint);
+            }
+            // Use the voltage-mapped pressure as authoritative converted value
             float pressure_final = pressure_from_smoothed;
             JsonObject s = tags.add<JsonObject>();
             s["id"] = String("AI") + String(i + 1);
@@ -2021,12 +2149,13 @@ void setupWebServer(int port /*= 80*/) {
         const auto &modbusSensors = getModbusSensors();
         for (const auto &mb : modbusSensors) {
             JsonObject s = tags.add<JsonObject>();
-            s["id"] = mb.id ? String(mb.id) : String("MB") + String(mb.address);
+            s["id"] = mb.id.length() ? mb.id : String("MB") + String(mb.address);
             s["port"] = mb.address;
             s["index"] = tags.size() - 1;
             s["source"] = "modbus";
             s["enabled"] = mb.online ? 1 : 0;
 
+            // Legacy compact distance value (kept for backwards compatibility)
             JsonObject val = s["value"].to<JsonObject>();
             if (!isnan(mb.distance_mm)) {
                 val["raw"] = roundToDecimals(mb.distance_mm, 1);
@@ -2049,6 +2178,18 @@ void setupWebServer(int port /*= 80*/) {
             conv["unit"] = "m";
             conv["semantic"] = "distance";
 
+            // New: include per-register array so API consumers can access each register by stable id
+            JsonArray regs = s["registers"].to<JsonArray>();
+            for (const auto &r : mb.registers) {
+                JsonObject jr = regs.add<JsonObject>();
+                jr["id"] = r.id.length() ? r.id : String(mb.id) + String("_") + r.name;
+                jr["name"] = r.name;
+                jr["unit"] = r.unit;
+                if (!isnan(r.raw)) jr["raw"] = r.raw; else jr["raw"] = nullptr;
+                if (!isnan(r.filtered)) jr["filtered"] = r.filtered; else jr["filtered"] = nullptr;
+                jr["valid"] = r.valid ? 1 : 0;
+            }
+
             JsonObject meta = s["meta"].to<JsonObject>();
             if (!isnan(mb.temperature_c)) {
                 meta["temperature_c"] = roundToDecimals(mb.temperature_c, 1);
@@ -2064,6 +2205,112 @@ void setupWebServer(int port /*= 80*/) {
     String resp;
     serializeJson(doc, resp);
     sendCorsJson(request, 200, "application/json", resp);
+    });
+
+    // Debug endpoint: expose raw ADC -> mV -> voltage -> calibrated pressure intermediate values
+    server->on("/api/debug/adc", HTTP_GET, [](AsyncWebServerRequest *request) {
+        int pinIndex = -1;
+        if (request->hasParam("tag")) {
+            pinIndex = tagToIndex(request->getParam("tag")->value());
+        } else if (request->hasParam("pin")) {
+            int pinNumber = request->getParam("pin")->value().toInt();
+            pinIndex = findVoltageSensorIndexByPin(pinNumber);
+        } else if (request->hasParam("index")) {
+            pinIndex = request->getParam("index")->value().toInt();
+        }
+        if (pinIndex < 0 || pinIndex >= getNumVoltageSensors()) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid or missing tag/pin/index\"}");
+            return;
+        }
+
+        int pin = getVoltageSensorPin(pinIndex);
+        struct SensorCalibration cal = getCalibrationForPin(pinIndex);
+
+        // Check for on-demand averaging via query param 'samples'
+        int samples = 1;
+        if (request->hasParam("samples")) {
+            samples = request->getParam("samples")->value().toInt();
+            if (samples < 1) samples = 1;
+            if (samples > 100) samples = 100; // cap to avoid long blocking
+        }
+
+        int raw_instant = 0;
+        if (samples <= 1) {
+            raw_instant = analogRead(pin);
+        } else {
+            const int SAMPLE_DELAY_MS = 2;
+            long sum = 0;
+            for (int i = 0; i < samples; ++i) {
+                sum += analogRead(pin);
+                delay(SAMPLE_DELAY_MS);
+            }
+            raw_instant = (int)(sum / samples);
+        }
+
+        // ADC->mV using esp_adc_cal
+        int mv_raw = adcRawToMv(raw_instant);
+    int baseline_mv = getAdcZeroBaselineMv();
+    int mv_raw_adj = mv_raw - baseline_mv; if (mv_raw_adj < 0) mv_raw_adj = 0;
+
+        // convert010VForPin maps ADC mV back to 0..10V input using per-pin divider/baseline
+        float v_raw = convert010VForPin(raw_instant, pinIndex);
+
+        float v_zero = convert010VForPin((int)round(cal.zeroRawAdc), pinIndex);
+        float v_span = convert010VForPin((int)round(cal.spanRawAdc), pinIndex);
+
+        // Pressure calculations (voltage-mapped) using raw value only
+        float pressure_from_raw = 0.0f;
+        if (fabs(v_span - v_zero) < 0.0001f) {
+            pressure_from_raw = (raw_instant * cal.scale) + cal.offset;
+        } else {
+            pressure_from_raw = cal.zeroPressureValue + (v_raw - v_zero) *
+                                 (cal.spanPressureValue - cal.zeroPressureValue) /
+                                 (v_span - v_zero);
+        }
+
+        float dividerMv = loadFloatFromNVSns("adc_cfg", "divider_mv", 3300.0f);
+
+        JsonDocument doc;
+        doc["status"] = "ok";
+        doc["tag"] = String("AI") + String(pinIndex + 1);
+        doc["pin"] = pin;
+        doc["index"] = pinIndex;
+    JsonObject rawObj = doc["raw"].to<JsonObject>();
+    rawObj["adc"] = raw_instant;
+    rawObj["mv"] = mv_raw;
+    rawObj["mv_adj"] = mv_raw_adj;
+    rawObj["voltage_v"] = roundToDecimals(v_raw, 4);
+
+    JsonObject calObj = doc["calibration"].to<JsonObject>();
+        calObj["zero_raw_adc"] = cal.zeroRawAdc;
+        calObj["span_raw_adc"] = cal.spanRawAdc;
+        calObj["zero_pressure_value"] = cal.zeroPressureValue;
+        calObj["span_pressure_value"] = cal.spanPressureValue;
+        calObj["zero_voltage_v"] = roundToDecimals(v_zero, 4);
+        calObj["span_voltage_v"] = roundToDecimals(v_span, 4);
+        calObj["scale"] = cal.scale;
+        calObj["offset"] = cal.offset;
+
+    JsonObject convObj = doc["converted"].to<JsonObject>();
+    convObj["pressure_from_raw_bar"] = roundToDecimals(pressure_from_raw, 4);
+
+    JsonObject audit = doc["audit"].to<JsonObject>();
+    float expected_voltage_v = (pressure_from_raw / DEFAULT_RANGE_BAR) * 10.0f;
+    audit["measured_voltage_v"] = roundToDecimals(v_raw, 4);
+    audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_v, 4);
+    audit["voltage_delta_v"] = roundToDecimals(v_raw - expected_voltage_v, 4);
+
+        // expose both per-pin and global values for clarity
+        float perPinDivider = getDividerMvForPin(pinIndex);
+        int perPinBaseline = getAdcZeroBaselineForPin(pinIndex);
+        doc["divider_mv"] = roundToDecimals(dividerMv, 2);
+        doc["divider_mv_pin"] = roundToDecimals(perPinDivider, 2);
+        doc["adc_zero_baseline_mv"] = baseline_mv;
+        doc["adc_zero_baseline_mv_pin"] = perPinBaseline;
+
+        String resp;
+        serializeJson(doc, resp);
+        sendCorsJson(request, 200, "application/json", resp);
     });
 
     // Notification config endpoints
