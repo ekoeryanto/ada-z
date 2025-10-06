@@ -3,7 +3,6 @@
 #include "config.h"
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WiFiManager.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
 #include <RTClib.h>

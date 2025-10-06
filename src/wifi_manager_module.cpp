@@ -4,10 +4,7 @@
 #include "ota_updater.h" // For setupOtaUpdater()
 #include "device_id.h" // getChipId()
 #include <WiFi.h>
-#include <WiFiManager.h>
 #include <esp_wifi_types.h>
-
-WiFiManager wm; // WiFiManager instance
 
 static bool wifiHandlersRegistered = false;
 static bool wifiReconnectPending = false;
@@ -20,6 +17,11 @@ static uint32_t lastWifiDisconnectReason = 0;
 
 static const unsigned long MIN_RECONNECT_INTERVAL_MS = 5UL * 1000UL;      // 5 seconds
 static const unsigned long MAX_RECONNECT_INTERVAL_MS = 5UL * 60UL * 1000UL; // 5 minutes
+static const unsigned long STORED_CRED_TIMEOUT_MS = 5000; // 5 seconds
+static const unsigned long PREF_SSID_TIMEOUT_MS = 7000;   // 7 seconds per SSID
+
+static bool tryConnectStored();
+static bool tryConnectPreferred();
 
 static void scheduleReconnect(unsigned long delayMs) {
     unsigned long now = millis();
@@ -108,75 +110,18 @@ void setupAndConnectWiFi() {
     registerWifiHandlers();
 
     // Quick attempt to connect using any stored credentials (if present)
-    WiFi.reconnect();
-    unsigned long start = millis();
-    const unsigned long quickTimeout = 5000; // 5 seconds to try stored credentials
-    while ((millis() - start) < quickTimeout) {
-        if (WiFi.status() == WL_CONNECTED) {
-            #if ENABLE_VERBOSE_LOGS
-            Serial.println("Connected using stored credentials");
-            #endif
-            syncNtp();
-            lastWifiGotIpMillis = millis();
-            wifiReconnectPending = false;
-            reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
-            return;
-        }
-        delay(200);
-    }
-
-    // If stored creds didn't work, try the prioritized SSIDs listed in config.h
-    const char* const* ssids = PREFERRED_SSIDS;
-    const char* const* passes = PREFERRED_PASSES;
-
-    for (int i = 0; ssids && ssids[i] != nullptr; ++i) {
-        const char* ssid = ssids[i];
-        const char* pass = (passes && passes[i]) ? passes[i] : "";
-        #if ENABLE_VERBOSE_LOGS
-        Serial.printf("Trying preferred SSID: %s\n", ssid);
-        #endif
-        WiFi.begin(ssid, pass);
-        unsigned long tryStart = millis();
-        const unsigned long tryTimeout = 7000; // 7 seconds per SSID
-        while ((millis() - tryStart) < tryTimeout) {
-            if (WiFi.status() == WL_CONNECTED) {
-                #if ENABLE_VERBOSE_LOGS
-                Serial.printf("Connected to preferred SSID: %s\n", ssid);
-                #endif
-                syncNtp();
-                lastWifiGotIpMillis = millis();
-                wifiReconnectPending = false;
-                reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
-                return;
-            }
-            delay(200);
-        }
-        // timed out, try next
-        #if ENABLE_VERBOSE_LOGS
-        Serial.printf("Timed out connecting to %s\n", ssid);
-        #endif
-    }
-
-    // None of the preferred SSIDs succeeded. Fall back to WiFiManager portal to allow user setup.
-    #if ENABLE_VERBOSE_LOGS
-    Serial.println("Preferred SSIDs failed — starting WiFiManager portal");
-    #endif
-    // Allow a reasonable timeout for user to configure if portal opens
-    wm.setConfigPortalTimeout(180); // 3 minutes
-    if (wm.autoConnect(WM_AP_NAME, WM_AP_PASS)) {
-        #if ENABLE_VERBOSE_LOGS
-        Serial.println("Connected via WiFiManager!");
-        #endif
+    if (tryConnectStored() || tryConnectPreferred()) {
         syncNtp();
         lastWifiGotIpMillis = millis();
         wifiReconnectPending = false;
         reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
-    } else {
-        #if ENABLE_VERBOSE_LOGS
-        Serial.println("WiFiManager portal timed out or failed. If no connection, device remains offline.");
-        #endif
-        scheduleReconnect(MIN_RECONNECT_INTERVAL_MS);
+        return;
     }
+
+    #if ENABLE_VERBOSE_LOGS
+    Serial.println("Preferred SSIDs failed — will retry later");
+    #endif
+    scheduleReconnect(MIN_RECONNECT_INTERVAL_MS);
 }
 
 void serviceWifiManager() {
@@ -200,7 +145,13 @@ void serviceWifiManager() {
     Serial.printf("WiFi reconnect attempt (backoff %lu ms)\n", reconnectDelayMs);
     #endif
     WiFi.mode(WIFI_STA);
-    WiFi.reconnect();
+    if (tryConnectStored() || tryConnectPreferred()) {
+        syncNtp();
+        lastWifiGotIpMillis = millis();
+        wifiReconnectPending = false;
+        reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
+        return;
+    }
     lastReconnectAttemptMillis = now;
 
     if (reconnectDelayMs < MAX_RECONNECT_INTERVAL_MS) {
@@ -272,4 +223,52 @@ const char* getWifiDisconnectReasonString(uint32_t reason) {
         case WIFI_REASON_HANDSHAKE_TIMEOUT: return "handshake timeout";
         default: return "unknown";
     }
+}
+
+static bool waitForConnection(unsigned long timeoutMs) {
+    unsigned long start = millis();
+    while ((millis() - start) < timeoutMs) {
+        if (WiFi.status() == WL_CONNECTED) {
+            return true;
+        }
+        delay(200);
+    }
+    return WiFi.status() == WL_CONNECTED;
+}
+
+static bool tryConnectStored() {
+    #if ENABLE_VERBOSE_LOGS
+    Serial.println("Attempting connection using stored credentials");
+    #endif
+    WiFi.reconnect();
+    if (waitForConnection(STORED_CRED_TIMEOUT_MS)) {
+        #if ENABLE_VERBOSE_LOGS
+        Serial.println("Connected using stored credentials");
+        #endif
+        return true;
+    }
+    return false;
+}
+
+static bool tryConnectPreferred() {
+    const char* const* ssids = PREFERRED_SSIDS;
+    const char* const* passes = PREFERRED_PASSES;
+    for (int i = 0; ssids && ssids[i] != nullptr; ++i) {
+        const char* ssid = ssids[i];
+        const char* pass = (passes && passes[i]) ? passes[i] : "";
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("Trying preferred SSID: %s\n", ssid);
+        #endif
+        WiFi.begin(ssid, pass);
+        if (waitForConnection(PREF_SSID_TIMEOUT_MS)) {
+            #if ENABLE_VERBOSE_LOGS
+            Serial.printf("Connected to preferred SSID: %s\n", ssid);
+            #endif
+            return true;
+        }
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("Timed out connecting to %s\n", ssid);
+        #endif
+    }
+    return false;
 }
