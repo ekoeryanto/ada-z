@@ -126,13 +126,36 @@ void initAdcCalibration() {
 }
 
 void loadVoltagePressureCalibration() {
+    // Migrate legacy calibration keys if present: check for OLD_* keys and copy to short keys
+    for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
+        String pinKey = String(VOLTAGE_SENSOR_PINS[i]);
+        // If legacy keys exist but new short keys absent, migrate
+        String legacyZKey = pinKey + String("_") + String(OLD_CAL_ZERO_PRESSURE_VALUE);
+        String legacySKey = pinKey + String("_") + String(OLD_CAL_SPAN_PRESSURE_VALUE);
+        String newZKey = pinKey + String("_") + String(CAL_ZERO_PRESSURE_VALUE);
+        String newSKey = pinKey + String("_") + String(CAL_SPAN_PRESSURE_VALUE);
+        // If legacy exists and new does not, copy
+        float tmp;
+        tmp = loadFloatFromNVSns(CAL_NAMESPACE, legacyZKey.c_str(), NAN);
+        if (!isnan(tmp)) {
+            // write to new key if missing or different
+            float existing = loadFloatFromNVSns(CAL_NAMESPACE, newZKey.c_str(), NAN);
+            if (isnan(existing)) saveFloatToNVSns(CAL_NAMESPACE, newZKey.c_str(), tmp);
+        }
+        tmp = loadFloatFromNVSns(CAL_NAMESPACE, legacySKey.c_str(), NAN);
+        if (!isnan(tmp)) {
+            float existing = loadFloatFromNVSns(CAL_NAMESPACE, newSKey.c_str(), NAN);
+            if (isnan(existing)) saveFloatToNVSns(CAL_NAMESPACE, newSKey.c_str(), tmp);
+        }
+    }
+
     for (int i = 0; i < NUM_VOLTAGE_SENSORS; i++) {
         String pinKey = String(VOLTAGE_SENSOR_PINS[i]); // Create key based on pin number
 
         voltageSensorCalibrations[i].zeroRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_RAW_ADC).c_str(), 0.0f);
         voltageSensorCalibrations[i].spanRawAdc = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_RAW_ADC).c_str(), 0.0f);
-        voltageSensorCalibrations[i].zeroPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), 0.0f);
-        voltageSensorCalibrations[i].spanPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), 0.0f);
+    voltageSensorCalibrations[i].zeroPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_ZERO_PRESSURE_VALUE).c_str(), 0.0f);
+    voltageSensorCalibrations[i].spanPressureValue = loadFloatFromNVSns(CAL_NAMESPACE, (pinKey + "_" + CAL_SPAN_PRESSURE_VALUE).c_str(), 0.0f);
 
         // If no pressure calibration was stored (both zero), apply sensible default mapping
         // that maps full ADC range to 0..10 bar for 0-10V sensors.

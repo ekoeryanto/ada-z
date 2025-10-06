@@ -101,15 +101,68 @@ void setupAndConnectWiFi() {
     WiFi.disconnect(true);
     delay(100);
 
-    // Try to connect using stored credentials (WiFiManager will attempt saved creds first).
-    // If that fails, WiFiManager will open a config AP and blocking portal for user setup.
+    // Try to connect using stored credentials first (non-blocking quick attempt)
     #if ENABLE_VERBOSE_LOGS
-    Serial.println("Not connected — attempting WiFiManager autoConnect (will use saved credentials or open portal)");
+    Serial.println("Not connected — attempting stored credentials and preferred SSIDs before opening portal");
     #endif
-    // Note: OTA updater will be started from main once WiFi is available.
+    registerWifiHandlers();
+
+    // Quick attempt to connect using any stored credentials (if present)
+    WiFi.reconnect();
+    unsigned long start = millis();
+    const unsigned long quickTimeout = 5000; // 5 seconds to try stored credentials
+    while ((millis() - start) < quickTimeout) {
+        if (WiFi.status() == WL_CONNECTED) {
+            #if ENABLE_VERBOSE_LOGS
+            Serial.println("Connected using stored credentials");
+            #endif
+            syncNtp();
+            lastWifiGotIpMillis = millis();
+            wifiReconnectPending = false;
+            reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
+            return;
+        }
+        delay(200);
+    }
+
+    // If stored creds didn't work, try the prioritized SSIDs listed in config.h
+    const char* const* ssids = PREFERRED_SSIDS;
+    const char* const* passes = PREFERRED_PASSES;
+
+    for (int i = 0; ssids && ssids[i] != nullptr; ++i) {
+        const char* ssid = ssids[i];
+        const char* pass = (passes && passes[i]) ? passes[i] : "";
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("Trying preferred SSID: %s\n", ssid);
+        #endif
+        WiFi.begin(ssid, pass);
+        unsigned long tryStart = millis();
+        const unsigned long tryTimeout = 7000; // 7 seconds per SSID
+        while ((millis() - tryStart) < tryTimeout) {
+            if (WiFi.status() == WL_CONNECTED) {
+                #if ENABLE_VERBOSE_LOGS
+                Serial.printf("Connected to preferred SSID: %s\n", ssid);
+                #endif
+                syncNtp();
+                lastWifiGotIpMillis = millis();
+                wifiReconnectPending = false;
+                reconnectDelayMs = MIN_RECONNECT_INTERVAL_MS;
+                return;
+            }
+            delay(200);
+        }
+        // timed out, try next
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("Timed out connecting to %s\n", ssid);
+        #endif
+    }
+
+    // None of the preferred SSIDs succeeded. Fall back to WiFiManager portal to allow user setup.
+    #if ENABLE_VERBOSE_LOGS
+    Serial.println("Preferred SSIDs failed — starting WiFiManager portal");
+    #endif
     // Allow a reasonable timeout for user to configure if portal opens
     wm.setConfigPortalTimeout(180); // 3 minutes
-    registerWifiHandlers();
     if (wm.autoConnect(WM_AP_NAME, WM_AP_PASS)) {
         #if ENABLE_VERBOSE_LOGS
         Serial.println("Connected via WiFiManager!");

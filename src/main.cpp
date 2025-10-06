@@ -22,6 +22,7 @@
 #include "wifi_manager_module.h"
 #include "storage_helpers.h"
 #include "web_api.h"
+#include "i2c_helpers.h"
 #include "sensors_config.h"
 #include "current_pressure_sensor.h"
 #include "device_id.h"
@@ -60,7 +61,8 @@ float convert010V(int adc);
 // --- Main Setup & Loop ---
 void setup() {
     Serial.begin(115200);
-    Wire.begin(I2C_SDA, I2C_SCL);
+    // Initialize I2C centrally
+    initI2C();
 
     // Ensure NVS is initialized before any Preferences usage
     esp_err_t nvs_err = nvs_flash_init();
@@ -99,7 +101,7 @@ void setup() {
 
     // Initialize sample store: store samplesPerSensor (smaller => less averaging)
     // Reduced from 12 to 6 and now to 4 for even more responsive averaging during calibration/debug
-    int samplesPerSensor = loadIntFromNVSns("adc_cfg", "samples_per_sensor", 4);
+    int samplesPerSensor = loadIntFromNVSns("adc_cfg", "sps", 4);
     initSampleStore(getNumVoltageSensors(), samplesPerSensor);
 
     // Load per-sensor enable flags and notification intervals from Preferences

@@ -264,6 +264,8 @@ static String loadTagMetadataJson() {
             payload.reserve(f.size());
             while (f.available()) {
                 payload += static_cast<char>(f.read());
+                // Yield occasionally to feed the watchdog and allow background tasks
+                delay(0);
             }
             f.close();
             if (payload.length() > 0) {
@@ -304,6 +306,8 @@ static String loadModbusConfigJsonFromFile() {
             payload.reserve(f.size());
             while (f.available()) {
                 payload += static_cast<char>(f.read());
+                // Avoid long blocking SPI reads
+                delay(0);
             }
             f.close();
             if (payload.length() > 0) {
@@ -1313,6 +1317,8 @@ void setupWebServer(int port /*= 80*/) {
             if (!tmpTar) return;
             // write chunk
             tmpTar.write(data, len);
+            // Yield to allow background tasks / watchdog handlers to run
+            delay(0);
             if (final) {
                 tmpTar.close();
                 // extract to /www.tmp
@@ -2221,8 +2227,8 @@ void setupWebServer(int port /*= 80*/) {
         if (!doc["samples_per_sensor"].isNull()) {
             int sp = doc["samples_per_sensor"].as<int>();
             resizeSampleStore(sp);
-            // Persist the chosen capacity so reboots preserve it
-            saveIntToNVSns("adc_cfg", "samples_per_sensor", sp);
+            // Persist the chosen capacity under short key 'sps' to avoid NVS key length limits
+            saveIntToNVSns("adc_cfg", "sps", sp);
             changed = true;
         }
         if (!doc["divider_mv"].isNull()) {

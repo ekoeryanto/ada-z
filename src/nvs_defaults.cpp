@@ -45,9 +45,14 @@ void ensureNvsDefaults() {
     if (!nvsKeyExists("ads_cfg", "ema_alpha")) saveFloatToNVSns("ads_cfg", "ema_alpha", DEFAULT_ADS_EMA_ALPHA);
     if (!nvsKeyExists("ads_cfg", "num_avg")) saveIntToNVSns("ads_cfg", "num_avg", DEFAULT_ADS_NUM_AVG);
 
-    // adc_cfg: divider_mv, samples_per_sensor
+    // adc_cfg: divider_mv, samples_per_sensor (stored under short key 'sps')
     if (!nvsKeyExists("adc_cfg", "divider_mv")) saveFloatToNVSns("adc_cfg", "divider_mv", DEFAULT_DIVIDER_MV);
-    if (!nvsKeyExists("adc_cfg", "samples_per_sensor")) saveIntToNVSns("adc_cfg", "samples_per_sensor", DEFAULT_ADC_SAMPLES_PER_SENSOR);
+    // Migrate legacy key if present
+    if (nvsKeyExists("adc_cfg", "samples_per_sensor") && !nvsKeyExists("adc_cfg", "sps")) {
+        int legacy = loadIntFromNVSns("adc_cfg", "samples_per_sensor", DEFAULT_ADC_SAMPLES_PER_SENSOR);
+        saveIntToNVSns("adc_cfg", "sps", legacy);
+    }
+    if (!nvsKeyExists("adc_cfg", "sps")) saveIntToNVSns("adc_cfg", "sps", DEFAULT_ADC_SAMPLES_PER_SENSOR);
 
     // Other small defaults can be added here if needed in future
 }

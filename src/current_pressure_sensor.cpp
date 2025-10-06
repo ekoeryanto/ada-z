@@ -2,6 +2,7 @@
 #include "config.h"
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
+#include "i2c_helpers.h"
 // Preferences helpers
 #include "calibration_keys.h"
 #include "storage_helpers.h"
@@ -22,7 +23,8 @@ static int adsBufCount[4] = {0,0,0,0};
 
 bool setupCurrentPressureSensor(uint8_t i2cAddress) {
     adsAddress = i2cAddress;
-    Wire.begin();
+    // ensure I2C initialized by central helper
+    initI2C();
     if (!ads.begin(adsAddress)) {
         Serial.print("Failed to initialize ADS1115 at 0x");
         Serial.println(String(adsAddress, HEX));

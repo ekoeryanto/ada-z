@@ -9,5 +9,8 @@ extern const char* CAL_ZERO_RAW_ADC;
 extern const char* CAL_SPAN_RAW_ADC;
 extern const char* CAL_ZERO_PRESSURE_VALUE;
 extern const char* CAL_SPAN_PRESSURE_VALUE;
+// Legacy (long) key names kept for migration support
+extern const char* OLD_CAL_ZERO_PRESSURE_VALUE;
+extern const char* OLD_CAL_SPAN_PRESSURE_VALUE;
 
 #endif // CALIBRATION_KEYS_H

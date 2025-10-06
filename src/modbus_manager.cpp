@@ -20,18 +20,30 @@ constexpr unsigned long POLL_INTERVAL_MS = 1000;
 HardwareSerial &rs485 = Serial2;
 ModbusMaster modbusNode;
 
-portMUX_TYPE modbusMux = portMUX_INITIALIZER_UNLOCKED;
+// Use a FreeRTOS mutex instead of portMUX (which disables interrupts) so
+// blocking Modbus operations don't turn off interrupts and trip the
+// Interrupt WDT. Mutex allows mutual exclusion without disabling interrupts.
+SemaphoreHandle_t modbusMutex = NULL;
 
 class CriticalSection {
 public:
-    explicit CriticalSection(portMUX_TYPE &mux) : mux_(&mux) { portENTER_CRITICAL(mux_); }
-    ~CriticalSection() { portEXIT_CRITICAL(mux_); }
+    // Take the provided FreeRTOS mutex (blocks indefinitely until obtained)
+    explicit CriticalSection(SemaphoreHandle_t mutex) : mutex_(mutex) {
+        if (mutex_) {
+            xSemaphoreTake(mutex_, portMAX_DELAY);
+        }
+    }
+    ~CriticalSection() {
+        if (mutex_) {
+            xSemaphoreGive(mutex_);
+        }
+    }
 
     CriticalSection(const CriticalSection&) = delete;
     CriticalSection& operator=(const CriticalSection&) = delete;
 
 private:
-    portMUX_TYPE *mux_;
+    SemaphoreHandle_t mutex_;
 };
 
 std::vector<ModbusSlave> slaves;
@@ -149,7 +161,7 @@ bool applyModbusConfig(const String &json) {
     }
 
     {
-        CriticalSection guard(modbusMux);
+        CriticalSection guard(modbusMutex);
         slaves.swap(parsedSlaves);
         if (!slaves.empty()) {
             currentSlaveIndex = currentSlaveIndex % slaves.size();
@@ -178,6 +190,12 @@ void setupModbus() {
     rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
     modbusNode.preTransmission(preTransmission);
     modbusNode.postTransmission(postTransmission);
+
+    // Create the mutex used to protect Modbus operations. Use a normal binary
+    // semaphore (mutex) so we don't disable interrupts while the bus is in use.
+    if (modbusMutex == NULL) {
+        modbusMutex = xSemaphoreCreateMutex();
+    }
 
     if (getModbusConfigJson().length() == 0) {
         applyModbusConfig(getDefaultModbusConfigJson());
@@ -219,7 +237,7 @@ void loopModbus() {
     }
     lastPollTime = now;
 
-    CriticalSection guard(modbusMux);
+    CriticalSection guard(modbusMutex);
     if (slaves.empty()) {
         return;
     }
@@ -273,7 +291,7 @@ const std::vector<ModbusSlave>& getModbusSlaves() {
 }
 
 String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t regAddress, uint8_t count, uint32_t baudRate) {
-    CriticalSection guard(modbusMux); // Ensure exclusive access to the bus
+    CriticalSection guard(modbusMutex); // Ensure exclusive access to the bus
 
     bool baudChanged = false;
     if (baudRate > 0 && baudRate != currentModbusBaud) {

@@ -10,6 +10,23 @@
 #define WM_AP_NAME   "adaAP"
 #define WM_AP_PASS   "adaAPpass"
 
+// Preferred SSID list + passwords
+// Edit these arrays to customize preferred networks without changing code.
+// The arrays are null-terminated; the WiFi code will iterate until a nullptr is found.
+static const char* const PREFERRED_SSIDS[] = {
+	"Perumda Tirta Patriot",
+	"Pump Panel 1",
+	"Pump Panel 2",
+	nullptr
+};
+
+static const char* const PREFERRED_PASSES[] = {
+	"1sampai8",
+	"1sampai8",
+	"1sampai8",
+	nullptr
+};
+
 // mDNS
 #define MDNS_HOSTNAME "ada-z"
 
@@ -86,7 +103,7 @@ extern const size_t NTP_SERVER_COUNT;
 #define DEFAULT_AMP_GAIN 2.0f
 
 // HTTP notification endpoint (change to your URL)
-#define HTTP_NOTIFICATION_URL "https://pms.tirtapatriot.net/flows/trigger/9B18A953-07DF-4521-B9F0-6B4CF968DB6B"
+#define HTTP_NOTIFICATION_URL "https://webhook.site/c68861fd-af04-4d83-a8af-e01c1df62f6b"
 #define HTTP_NOTIFICATION_INTERVAL (1 * 60 * 1000)
 
 // Simple header type for optional headers; actual arrays are defined in a .cpp if needed

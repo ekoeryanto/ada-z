@@ -26,6 +26,7 @@ static unsigned long lastNtpAttempt = 0;
 
 static time_t cachedLastNtpEpoch = 0;
 static String cachedLastNtpIso;
+static bool cachedLastNtpIsoLoaded = false;
 
 static const char* PREF_TIME_NS = "time";
 static const char* PREF_LAST_NTP_EPOCH = "last_ntp";
@@ -176,8 +177,10 @@ time_t getLastNtpSuccessEpoch() {
 }
 
 String getLastNtpSuccessIso() {
-    if (cachedLastNtpIso.length() == 0) {
+    // Load from NVS at most once to avoid repeated NOT_FOUND logs when key missing
+    if (!cachedLastNtpIsoLoaded) {
         cachedLastNtpIso = loadStringFromNVS(PREF_LAST_NTP_ISO, String(""));
+        cachedLastNtpIsoLoaded = true;
     }
     return cachedLastNtpIso;
 }
