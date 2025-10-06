@@ -34,6 +34,11 @@ static const char* const PREFERRED_PASSES[] = {
 #define OTA_PORT     3232
 #define OTA_PASSWORD "Mar9aMulya"
 
+// Disable ArduinoOTA handler to save flash when only HTTP OTA is needed
+#ifndef ENABLE_ARDUINO_OTA
+#define ENABLE_ARDUINO_OTA 0
+#endif
+
 // Sensor timing defaults
 #define SENSOR_READ_INTERVAL 5000 // ms (shortened for debugging)
 #define EMA_ALPHA 0.05f

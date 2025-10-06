@@ -726,10 +726,6 @@ void setupWebServer(int port /*= 80*/) {
             delay(100);
             ESP.restart();
         }
-        otaLastAuthRejected = false;
-        otaLastHadError = false;
-        otaLastSucceeded = false;
-        otaLastError = String("");
     });
 
     server->on(
@@ -768,7 +764,7 @@ void setupWebServer(int port /*= 80*/) {
             if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
                 Update.printError(Serial);
                 otaLastHadError = true;
-                otaLastError = String("begin_failed");
+                otaLastError = String("begin_failed: ") + Update.errorString();
                 Serial.println("OTA Update: Update.begin() failed.");
             } else {
                 update_begun = true;
@@ -781,7 +777,7 @@ void setupWebServer(int port /*= 80*/) {
             if (Update.write(data, len) != len) {
                 Update.printError(Serial);
                 otaLastHadError = true;
-                otaLastError = String("write_failed");
+                otaLastError = String("write_failed: ") + Update.errorString();
                 Serial.println("OTA Update: Update.write() failed.");
             }
         }
@@ -791,13 +787,18 @@ void setupWebServer(int port /*= 80*/) {
                 if (Update.end(true)) {
                     Serial.printf("Update Success: %u bytes\n", index + len);
                     otaLastSucceeded = true;
+                    otaLastError = String("");
                     Serial.println("OTA Update: Update.end() succeeded.");
                 } else {
                     Update.printError(Serial);
                     otaLastHadError = true;
-                    otaLastError = String("end_failed");
+                    otaLastError = String("end_failed: ") + Update.errorString();
                     Serial.println("OTA Update: Update.end() failed.");
                 }
+            } else if (!update_begun && !otaLastHadError) {
+                otaLastHadError = true;
+                otaLastError = String("no_data_written");
+                Serial.println("OTA Update: no chunks were written (update not started).");
             }
             update_begun = false;
             Serial.println("OTA Update: Finished.");

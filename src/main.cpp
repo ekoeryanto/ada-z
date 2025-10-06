@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiManager.h>
-#include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
 #include <RTClib.h>

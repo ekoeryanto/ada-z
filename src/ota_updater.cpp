@@ -1,7 +1,9 @@
 #include "ota_updater.h"
-#include "config.h" // For OTA_PORT, OTA_PASSWORD, MDNS_HOSTNAME
-#include <ArduinoOTA.h>
+#include "config.h" // For OTA_PORT, OTA_PASSWORD, MDNS_HOSTNAME, ENABLE_ARDUINO_OTA
 #include "storage_helpers.h"
+
+#if ENABLE_ARDUINO_OTA
+#include <ArduinoOTA.h>
 
 void setupOtaUpdater() {
     ArduinoOTA.setPort(OTA_PORT);
@@ -41,3 +43,15 @@ void setupOtaUpdater() {
 void handleOtaUpdate() {
     ArduinoOTA.handle();
 }
+
+#else // ENABLE_ARDUINO_OTA
+
+void setupOtaUpdater() {
+    // ArduinoOTA disabled to save flash; HTTP OTA remains available.
+}
+
+void handleOtaUpdate() {
+    // no-op when ArduinoOTA support is disabled.
+}
+
+#endif
