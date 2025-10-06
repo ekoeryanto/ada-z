@@ -4,20 +4,21 @@
 #include "web_api_handlers.h"
 #include "config.h" // For HTTP_NOTIFICATION_URL, etc.
 #include "pins_config.h" // For AI1_PIN
-#include <AsyncJson.h>
-#include "voltage_pressure_sensor.h" // For calibration
-#include "calibration_keys.h" // For calibration key constants
-#include "sensor_calibration_types.h" // For SensorCalibration struct
-#include "time_sync.h"
 #include "sensors_config.h"
 #include "http_notifier.h"
 #include "sd_logger.h"
 #include "current_pressure_sensor.h"
 #include "device_id.h"
 #include "sample_store.h"
+#include "time_sync.h"
+#include "voltage_pressure_sensor.h"
+#include "calibration_keys.h"
+#include "sensor_calibration_types.h"
 #include "wifi_manager_module.h"
 #include "modbus_manager.h"
 #include <ArduinoJson.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncJson.h>
 #include "storage_helpers.h"
 #include "json_helper.h"
 #include <WiFi.h>
@@ -159,13 +160,14 @@ void handleConfigGet(AsyncWebServerRequest *request) {
 
 void handleConfigPost(AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject incoming = json.as<JsonObject>();
+        bool sensorSettingsChanged = false;
         if (incoming.isNull()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid JSON";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
-
-        bool sensorSettingsChanged = false;
-
         if (incoming["time"].is<JsonObject>()) {
             JsonObject timeObj = incoming["time"].as<JsonObject>();
             if (timeObj["timezone"].is<const char*>()) {
@@ -309,11 +311,9 @@ void handleConfigPost(AsyncWebServerRequest *request, JsonVariant &json) {
             persistSensorSettings();
         }
 
-        JsonDocument responseDoc;
-        populateUnifiedConfig(responseDoc);
-        String response;
-        serializeJson(responseDoc, response);
-        sendCorsJson(request, 200, "application/json", response);
+    DynamicJsonDocument responseDoc(CONFIG_DOC_CAP);
+    populateUnifiedConfig(responseDoc);
+    sendCorsJsonDoc(request, 200, responseDoc);
 }
 void loadCalibration() {
     // Load calibration values from NVS (if present) for debugging
@@ -342,15 +342,18 @@ void handleCalibrate() {
 
 void handleCalibratePost(AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-        #if ENABLE_VERBOSE_LOGS
-        Serial.print("Received calibrate POST: ");
-        serializeJson(doc, Serial);
-        Serial.println();
-        #endif
-        if (doc.isNull()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid JSON\"}");
-            return;
-        }
+            #if ENABLE_VERBOSE_LOGS 
+            Serial.print("Received calibrate POST: "); 
+            serializeJson(doc, Serial); 
+            Serial.println(); 
+            #endif 
+            if (doc.isNull()) { 
+                DynamicJsonDocument r(128); 
+                r["status"] = "error"; 
+                r["message"] = "Invalid JSON"; 
+                sendCorsJsonDoc(request, 400, r); 
+                return; 
+            }
 
         // Determine which sensor pin/index this calibration applies to. Accept pin_index, pin or sensor_id (AI1)
         int pinIndex = -1;
@@ -365,7 +368,10 @@ void handleCalibratePost(AsyncWebServerRequest *request, JsonVariant &json) {
         }
 
         if (pinIndex < 0) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid or missing pin_index/pin\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid or missing pin_index/pin";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -382,7 +388,12 @@ void handleCalibratePost(AsyncWebServerRequest *request, JsonVariant &json) {
             #if ENABLE_VERBOSE_LOGS
             Serial.printf("Calibration saved for pin index %d\n", pinIndex);
             #endif
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Calibration points saved\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Calibration points saved";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -392,7 +403,12 @@ void handleCalibratePost(AsyncWebServerRequest *request, JsonVariant &json) {
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, currentRawAdc, cal.spanRawAdc, 0.0f, cal.spanPressureValue);
             Serial.printf("Zero calibration set for index %d: raw=%.2f\n", pinIndex, currentRawAdc);
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Zero calibration set\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Zero calibration set";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -403,11 +419,20 @@ void handleCalibratePost(AsyncWebServerRequest *request, JsonVariant &json) {
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, cal.zeroRawAdc, currentRawAdc, cal.zeroPressureValue, spanPressureValue);
             Serial.printf("Span calibration set for index %d: raw=%.2f pressure=%.2f\n", pinIndex, currentRawAdc, spanPressureValue);
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Span calibration set\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Span calibration set";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
-
-        sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid calibration parameters\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid calibration parameters";
+            sendCorsJsonDoc(request, 400, r);
+        }
 }
 
 void handleCalibrateGet(AsyncWebServerRequest *request) {
@@ -425,7 +450,10 @@ void handleCalibrateGet(AsyncWebServerRequest *request) {
         }
 
         if (pinIndex < 0) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid pin index/number\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid pin index/number";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -476,7 +504,10 @@ void setupWebServer(int port /*= 80*/) {
     server->addHandler(configHandler);
     server->on("/api/tags", HTTP_POST, [](AsyncWebServerRequest *request){}, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
         if (!sdReady) {
-            sendCorsJson(request, 503, "application/json", "{\"status\":\"error\",\"message\":\"SD card not ready\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "SD card not ready";
+            sendCorsJsonDoc(request, 503, r);
             return;
         }
         if (index == 0) {
@@ -485,14 +516,25 @@ void setupWebServer(int port /*= 80*/) {
         String body;
         body.concat((char*)data, len);
         if (body.length() == 0) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Empty payload\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Empty payload";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
         if (!saveTagMetadataJson(body)) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid tag metadata\"}");
+            DynamicJsonDocument r(160);
+            r["status"] = "error";
+            r["message"] = "Invalid tag metadata";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Tag metadata saved\"}");
+        {
+            DynamicJsonDocument r(160);
+            r["status"] = "success";
+            r["message"] = "Tag metadata saved";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     server->on("/api/modbus/config", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -512,14 +554,20 @@ void setupWebServer(int port /*= 80*/) {
 
     auto *modbusConfigHandler = new AsyncCallbackJsonWebHandler("/api/modbus/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
         if (!json.is<JsonObject>()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid JSON";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
         String incoming;
         serializeJson(json, incoming);
         if (!applyModbusConfig(incoming)) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid Modbus configuration\"}");
+            DynamicJsonDocument r(256);
+            r["status"] = "error";
+            r["message"] = "Invalid Modbus configuration";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -601,7 +649,10 @@ void setupWebServer(int port /*= 80*/) {
     auto *modbusPollHandler = new AsyncCallbackJsonWebHandler("/api/modbus/poll", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject obj = json.as<JsonObject>();
         if (obj.isNull()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid JSON";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -611,14 +662,23 @@ void setupWebServer(int port /*= 80*/) {
         uint8_t count = obj["count"];
 
         if (count == 0 || count > 125) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid count (must be 1-125)\"}");
+            DynamicJsonDocument r(160);
+            r["status"] = "error";
+            r["message"] = "Invalid count (must be 1-125)";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
         ModbusRegisterType regType = (regTypeStr.equalsIgnoreCase("input")) ? ModbusRegisterType::INPUT_REGISTER : ModbusRegisterType::HOLDING_REGISTER;
 
         String result = pollModbus(slaveAddress, regType, regAddress, count);
-        sendCorsJson(request, 200, "application/json", result);
+        DynamicJsonDocument maybe(4096);
+        DeserializationError derr = deserializeJson(maybe, result);
+        if (derr) {
+            sendCorsJson(request, 200, "application/json", result);
+        } else {
+            sendCorsJsonDoc(request, 200, maybe);
+        }
     });
     server->addHandler(modbusPollHandler);
 
@@ -647,23 +707,22 @@ void setupWebServer(int port /*= 80*/) {
     // Secure OTA update endpoint (multipart/form-data upload)
     server->on("/api/update", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (otaLastAuthRejected) {
-            String payload = String("{\"status\":\"error\",\"message\":\"OTA authentication failed\"}");
-            if (otaLastError.length() > 0) {
-                payload = String("{\"status\":\"error\",\"message\":\"OTA authentication failed\",\"error\":\"") + otaLastError + String("\"}");
-            }
-            sendCorsJson(request, 401, "application/json", payload);
+            DynamicJsonDocument r(256);
+            r["status"] = "error";
+            r["message"] = "OTA authentication failed";
+            if (otaLastError.length() > 0) r["error"] = otaLastError;
+            sendCorsJsonDoc(request, 401, r);
         } else if (otaLastHadError || !otaLastSucceeded) {
-            String payload = String("{\"status\":\"error\",\"message\":\"OTA update failed\"}");
-            if (otaLastError.length() > 0) {
-                payload = String("{\"status\":\"error\",\"message\":\"OTA update failed\",\"error\":\"") + otaLastError + String("\"}");
-            }
-            sendCorsJson(request, 500, "application/json", payload);
+            DynamicJsonDocument r(256);
+            r["status"] = "error";
+            r["message"] = "OTA update failed";
+            if (otaLastError.length() > 0) r["error"] = otaLastError;
+            sendCorsJsonDoc(request, 500, r);
         } else {
-            AsyncResponseStream *response = request->beginResponseStream("application/json");
-            response->setCode(200);
-            setCorsHeaders(response);
-            response->print("{\"status\":ok\",\"message\":\"Update received (rebooting)\"}");
-            request->send(response);
+            DynamicJsonDocument r(160);
+            r["status"] = "ok";
+            r["message"] = "Update received (rebooting)";
+            sendCorsJsonDoc(request, 200, r);
             delay(100);
             ESP.restart();
         }
@@ -843,30 +902,32 @@ void setupWebServer(int port /*= 80*/) {
 
     // OTA status endpoint (informational)
     server->on("/api/update/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        JsonDocument doc;
+        DynamicJsonDocument doc(256);
         doc["auth_rejected"] = otaLastAuthRejected ? 1 : 0;
         doc["had_error"] = otaLastHadError ? 1 : 0;
         doc["succeeded"] = otaLastSucceeded ? 1 : 0;
         doc["last_error"] = otaLastError;
-        String out;
-        serializeJson(doc, out);
-        sendCorsJson(request, 200, "application/json", out);
+        sendCorsJsonDoc(request, 200, doc);
     });
 
     AsyncCallbackJsonWebHandler* rtcPostHandler = new AsyncCallbackJsonWebHandler("/api/time/rtc", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-        if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+    if (doc.isNull()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid JSON"; sendCorsJsonDoc(request, 400, r); return; }
 
         if (doc["from_system"].is<bool>() && doc["from_system"].as<bool>()) {
             // Seed RTC from system time
-            if (!isRtcPresent()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"RTC not present\"}"); return; }
+            if (!isRtcPresent()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "RTC not present"; sendCorsJsonDoc(request, 400, r); return; }
             time_t sys = time(nullptr);
             struct tm *tm_sys = localtime(&sys);
-            if (!tm_sys) { sendCorsJson(request, 500, "application/json", "{\"status\":\"error\",\"message\":\"System time invalid\"}"); return; }
+            if (!tm_sys) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "System time invalid"; sendCorsJsonDoc(request, 500, r); return; }
             DateTime dt(tm_sys->tm_year + 1900, tm_sys->tm_mon + 1, tm_sys->tm_mday, tm_sys->tm_hour, tm_sys->tm_min, tm_sys->tm_sec);
             rtc.adjust(dt);
-            String resp = String("{\"status\":\"success\",\"message\":\"RTC set from system time\"}");
-            sendCorsJson(request, 200, "application/json", resp);
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "RTC set from system time";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -875,19 +936,28 @@ void setupWebServer(int port /*= 80*/) {
             // Expect format YYYY-MM-DDTHH:MM:SSZ or similar
             int Y,M,D,h,m,s;
             if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%dZ", &Y,&M,&D,&h,&m,&s) == 6) {
-                if (!isRtcPresent()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"RTC not present\"}"); return; }
+                if (!isRtcPresent()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "RTC not present"; sendCorsJsonDoc(request, 400, r); return; }
                 DateTime dt(Y,M,D,h,m,s);
                 rtc.adjust(dt);
-                String resp = String("{\"status\":\"success\",\"message\":\"RTC set from ISO\"}");
-                sendCorsJson(request, 200, "application/json", resp);
+                {
+                    DynamicJsonDocument r(128);
+                    r["status"] = "success";
+                    r["message"] = "RTC set from ISO";
+                    sendCorsJsonDoc(request, 200, r);
+                }
                 return;
             } else {
-                sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid ISO format\"}");
+                DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid ISO format"; sendCorsJsonDoc(request, 400, r);
                 return;
             }
         }
 
-        sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"No valid action provided\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "No valid action provided";
+            sendCorsJsonDoc(request, 400, r);
+        }
     });
     rtcPostHandler->setMaxContentLength(512);
     server->addHandler(rtcPostHandler);
@@ -896,18 +966,27 @@ void setupWebServer(int port /*= 80*/) {
     AsyncCallbackJsonWebHandler* calPinHandler = new AsyncCallbackJsonWebHandler("/api/calibrate/pin", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
         if (doc.isNull()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid JSON\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid JSON";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
         if (!doc["pin"].is<int>()) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Missing pin\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Missing pin";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
         int pinNumber = doc["pin"].as<int>();
         int pinIndex = findVoltageSensorIndexByPin(pinNumber);
         if (pinIndex < 0) {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Unknown pin\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Unknown pin";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -948,16 +1027,19 @@ void setupWebServer(int port /*= 80*/) {
             respDoc["samples_used"] = samplesUsed;
             respDoc["samples_from_cache"] = usedCache ? 1 : 0;
             respDoc["span_pressure_value"] = targetPressure;
-            String resp;
-            serializeJson(respDoc, resp);
-            sendCorsJson(request, 200, "application/json", resp);
+            sendCorsJsonDoc(request, 200, respDoc);
             return;
         }
 
         // Reuse logic from handleCalibrate: full explicit, trigger_zero, trigger_span
         if (doc["zero_raw_adc"].is<float>() && doc["span_raw_adc"].is<float>() && doc["zero_pressure_value"].is<float>() && doc["span_pressure_value"].is<float>()) {
             saveCalibrationForPin(pinIndex, doc["zero_raw_adc"].as<float>(), doc["span_raw_adc"].as<float>(), doc["zero_pressure_value"].as<float>(), doc["span_pressure_value"].as<float>());
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Calibration saved\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Calibration saved";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -965,7 +1047,12 @@ void setupWebServer(int port /*= 80*/) {
             float currentRawAdc = getSmoothedADC(pinIndex);
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, currentRawAdc, cal.spanRawAdc, 0.0f, cal.spanPressureValue);
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Zero calibration set\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Zero calibration set";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -973,11 +1060,21 @@ void setupWebServer(int port /*= 80*/) {
             float currentRawAdc = getSmoothedADC(pinIndex);
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, cal.zeroRawAdc, currentRawAdc, cal.zeroPressureValue, doc["span_pressure_value"].as<float>());
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Span calibration set\"}");
+            {
+                DynamicJsonDocument r(128);
+                r["status"] = "success";
+                r["message"] = "Span calibration set";
+                sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
-        sendCorsJson(request, 400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid calibration parameters\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Invalid calibration parameters";
+            sendCorsJsonDoc(request, 400, r);
+        }
     });
     calPinHandler->setMaxContentLength(1024);
     server->addHandler(calPinHandler);
@@ -990,13 +1087,18 @@ void setupWebServer(int port /*= 80*/) {
         }
         // Reseed smoothed ADCs so readings update immediately after calibration
         setupVoltagePressureSensor();
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Default calibration applied to all sensors\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "Default calibration applied to all sensors";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     // Convenience: apply default calibration for a single pin by pin
     AsyncCallbackJsonWebHandler* calDefPinHandler = new AsyncCallbackJsonWebHandler("/api/calibrate/default/pin", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-        if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+    if (doc.isNull()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid JSON"; sendCorsJsonDoc(request, 400, r); return; }
         int pinIndex = -1;
         if (!doc["pin"].isNull()) {
             int pinNumber = doc["pin"].as<int>();
@@ -1004,14 +1106,22 @@ void setupWebServer(int port /*= 80*/) {
         } else if (!doc["tag"].isNull()) {
             pinIndex = tagToIndex(doc["tag"].as<String>());
         } else {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Missing pin or tag\"}");
+            DynamicJsonDocument r(128);
+            r["status"] = "error";
+            r["message"] = "Missing pin or tag";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
-        if (pinIndex < 0) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Unknown sensor/pin\"}"); return; }
+    if (pinIndex < 0) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Unknown sensor/pin"; sendCorsJsonDoc(request, 400, r); return; }
         saveCalibrationForPin(pinIndex, 0.0f, 4095.0f, 0.0f, 10.0f);
         // Reseed smoothed ADC for immediate effect
         setupVoltagePressureSensor();
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Default calibration applied to pin\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "Default calibration applied to pin";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
     calDefPinHandler->setMaxContentLength(256);
     server->addHandler(calDefPinHandler);
@@ -1069,7 +1179,10 @@ void setupWebServer(int port /*= 80*/) {
                 targets[i] = t;
             }
         } else {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"No target provided\"}");
+            DynamicJsonDocument r(160);
+            r["status"] = "error";
+            r["message"] = "No target provided";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -1111,9 +1224,7 @@ void setupWebServer(int port /*= 80*/) {
             setupVoltagePressureSensor();
         }
 
-        String out;
-        serializeJson(resp, out);
-        sendCorsJson(request, 200, "application/json", out);
+        sendCorsJsonDoc(request, 200, resp);
     });
     adcAutoCalHandler->setMaxContentLength(1024);
     server->addHandler(adcAutoCalHandler);
@@ -1128,7 +1239,12 @@ void setupWebServer(int port /*= 80*/) {
 
     server->on("/api/sd/error_log/clear", HTTP_POST, [](AsyncWebServerRequest *request) {
         clearErrorLog();
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"error log cleared\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "error log cleared";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     server->on("/api/sd/pending_notifications", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1149,17 +1265,15 @@ void setupWebServer(int port /*= 80*/) {
         if (includeContent && sdCardFound && pendingCount > 0) {
             doc["content"] = readPendingNotifications(lines);
         }
-        String resp;
-        serializeJson(doc, resp);
-        sendCorsJson(request, 200, "application/json", resp);
+        sendCorsJsonDoc(request, 200, doc);
     });
 
     server->on("/api/sd/pending_notifications/clear", HTTP_POST, [](AsyncWebServerRequest *request) {
         bool ok = clearPendingNotifications();
         if (ok) {
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"pending notifications cleared\"}");
+            DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "pending notifications cleared"; sendCorsJsonDoc(request, 200, r);
         } else {
-            sendCorsJson(request, 500, "application/json", "{\"status\":\"error\",\"message\":\"failed to clear pending notifications\"}");
+            DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "failed to clear pending notifications"; sendCorsJsonDoc(request, 500, r);
         }
     });
 
@@ -1183,7 +1297,10 @@ void setupWebServer(int port /*= 80*/) {
             // apply to default ADS channels (0..1)
             for (int ch = 0; ch <= 1; ++ch) targets[ch] = t;
         } else {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"No target provided\"}");
+            DynamicJsonDocument r(160);
+            r["status"] = "error";
+            r["message"] = "No target provided";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -1232,9 +1349,7 @@ void setupWebServer(int port /*= 80*/) {
             r["status"] = "applied";
         }
 
-        String out;
-        serializeJson(resp, out);
-        sendCorsJson(request, 200, "application/json", out);
+        sendCorsJsonDoc(request, 200, resp);
     });
     adsAutoCalHandler->setMaxContentLength(1024);
     server->addHandler(adsAutoCalHandler);
@@ -1291,7 +1406,10 @@ void setupWebServer(int port /*= 80*/) {
                 targets[i] = t;
             }
         } else {
-            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"No target provided\"}");
+            DynamicJsonDocument r(160);
+            r["status"] = "error";
+            r["message"] = "No target provided";
+            sendCorsJsonDoc(request, 400, r);
             return;
         }
 
@@ -1358,9 +1476,7 @@ void setupWebServer(int port /*= 80*/) {
             obj["scale"] = cal.scale;
             obj["offset"] = cal.offset;
         }
-        String response;
-        serializeJson(doc, response);
-        sendCorsJson(request, 200, "application/json", response);
+        sendCorsJsonDoc(request, 200, doc);
     });
     // --- Sensors config endpoints ---
     server->on("/api/sensors/config", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1375,9 +1491,7 @@ void setupWebServer(int port /*= 80*/) {
             obj["enabled"] = getSensorEnabled(i);
             obj["notification_interval_ms"] = getSensorNotificationInterval(i);
         }
-        String response;
-        serializeJson(doc, response);
-        sendCorsJson(request, 200, "application/json", response);
+        sendCorsJsonDoc(request, 200, doc);
     });
 
     AsyncCallbackJsonWebHandler* sensorsConfigHandler = new AsyncCallbackJsonWebHandler("/api/sensors/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
@@ -1405,7 +1519,12 @@ void setupWebServer(int port /*= 80*/) {
         }
         
 
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"Sensor config updated\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "Sensor config updated";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
     sensorsConfigHandler->setMaxContentLength(2048);
     server->addHandler(sensorsConfigHandler);
@@ -1440,7 +1559,12 @@ void setupWebServer(int port /*= 80*/) {
         setNotificationMode((uint8_t)mode);
         setNotificationPayloadType((uint8_t)payload);
 
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Notification config updated\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "Notification config updated";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
     notifConfigHandler->setMaxContentLength(256);
     server->addHandler(notifConfigHandler);
@@ -1503,7 +1627,12 @@ void setupWebServer(int port /*= 80*/) {
             saveIntToNVSns("ads_cfg", "num_avg", na);
             setAdsNumAvg(na);
         }
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"ADS config saved\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "success";
+            r["message"] = "ADS config saved";
+            sendCorsJsonDoc(request, 200, r);
+        }
     };
 
     AsyncCallbackJsonWebHandler* adsConfigHandler = new AsyncCallbackJsonWebHandler("/api/ads/config", handleAdsConfigPost);
@@ -1543,8 +1672,11 @@ void setupWebServer(int port /*= 80*/) {
                 changed = true;
             }
         }
-        if (changed) sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"ADC config updated\"}");
-        else sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"No supported keys provided\"}");
+        if (changed) {
+            DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "ADC config updated"; sendCorsJsonDoc(request, 200, r);
+        } else {
+            DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "No supported keys provided"; sendCorsJsonDoc(request, 400, r);
+        }
     });
     adcConfigHandler->setMaxContentLength(256);
     server->addHandler(adcConfigHandler);
@@ -1555,13 +1687,23 @@ void setupWebServer(int port /*= 80*/) {
         clearSampleStore();
         // Re-initialize smoothed ADCs by reseeding from current ADC readings
         setupVoltagePressureSensor();
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"ADC smoothed values reseeded and sample buffers cleared\"}");
+        {
+            DynamicJsonDocument r(160);
+            r["status"] = "success";
+            r["message"] = "ADC smoothed values reseeded and sample buffers cleared";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     // Reseed ADS smoothing buffers (clear median/EMA) after calibration or tp_scale change
     server->on("/api/ads/reseed", HTTP_POST, [](AsyncWebServerRequest *request) {
         clearAdsBuffers();
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"ADS buffers cleared and reseeded\"}");
+        {
+            DynamicJsonDocument r(160);
+            r["status"] = "success";
+            r["message"] = "ADS buffers cleared and reseeded";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     // Trigger notification(s) on demand: POST body may include { "sensor_index": int } or { "pin": int } (accepts legacy "pin_number" too)
@@ -1597,7 +1739,9 @@ void setupWebServer(int port /*= 80*/) {
             float mv = adsRawToMv(raw);
             float ma = readAdsMa(ch, DEFAULT_SHUNT_OHM, DEFAULT_AMP_GAIN);
             sendAdsNotification(ch, raw, mv, ma);
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Notification triggered for ADS channel\"}");
+            {
+                DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "Notification triggered for ADS channel"; sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -1609,7 +1753,9 @@ void setupWebServer(int port /*= 80*/) {
             float calibrated = getSmoothedVoltagePressure(targetIndex);
             // Use calibrated value as the 'voltage' parameter expected by notifier
             sendHttpNotification(targetIndex, raw, smoothed, calibrated);
-            sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Notification triggered for sensor\"}");
+            {
+                DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "Notification triggered for sensor"; sendCorsJsonDoc(request, 200, r);
+            }
             return;
         }
 
@@ -1628,7 +1774,9 @@ void setupWebServer(int port /*= 80*/) {
         delete[] rawArr;
         delete[] smoothedArr;
         delete[] indices;
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Batch notification triggered\"}");
+        {
+            DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "Batch notification triggered"; sendCorsJsonDoc(request, 200, r);
+        }
     });
     notifTriggerHandler->setMaxContentLength(256);
     server->addHandler(notifTriggerHandler);
@@ -1656,7 +1804,9 @@ void setupWebServer(int port /*= 80*/) {
                 rtc.adjust(DateTime(tm_now->tm_year + 1900, tm_now->tm_mon + 1, tm_now->tm_mday, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec));
             }
         }
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"Time config updated\"}");
+        {
+            DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "Time config updated"; sendCorsJsonDoc(request, 200, r);
+        }
     });
     timeConfigHandler->setMaxContentLength(128);
     server->addHandler(timeConfigHandler);
@@ -1676,7 +1826,9 @@ void setupWebServer(int port /*= 80*/) {
         if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
         bool sd = doc["sd_enabled"].as<int>() != 0;
         setSdEnabled(sd);
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"success\",\"message\":\"SD config updated\"}");
+        {
+            DynamicJsonDocument r(128); r["status"] = "success"; r["message"] = "SD config updated"; sendCorsJsonDoc(request, 200, r);
+        }
     });
     sdConfigHandler->setMaxContentLength(128);
     server->addHandler(sdConfigHandler);

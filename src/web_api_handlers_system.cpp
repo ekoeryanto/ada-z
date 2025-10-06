@@ -9,7 +9,12 @@ void registerSystemHandlers(AsyncWebServer *server) {
 
     server->on("/api/time/sync", HTTP_POST, [](AsyncWebServerRequest *request) {
         syncNtp(isRtcPresent());
-        sendCorsJson(request, 200, "application/json", "{\"status\":\"ok\", \"message\":\"NTP sync triggered\"}");
+        {
+            DynamicJsonDocument r(128);
+            r["status"] = "ok";
+            r["message"] = "NTP sync triggered";
+            sendCorsJsonDoc(request, 200, r);
+        }
     });
 
     server->on("/api/time/status", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -29,9 +34,7 @@ void registerSystemHandlers(AsyncWebServer *server) {
         doc["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
         doc["last_ntp_iso"] = getLastNtpSuccessIso();
         doc["pending_rtc_sync"] = isPendingRtcSync() ? 1 : 0;
-        String resp;
-        serializeJson(doc, resp);
-        sendCorsJson(request, 200, "application/json", resp);
+    sendCorsJsonDoc(request, 200, doc);
     });
 
     server->on("/api/system", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -48,13 +51,18 @@ void registerSystemHandlers(AsyncWebServer *server) {
         doc["last_ntp_epoch"] = (unsigned long)getLastNtpSuccessEpoch();
         doc["last_ntp_iso"] = getLastNtpSuccessIso();
         doc["time_iso"] = getIsoTimestamp();
-        String resp;
-        serializeJson(doc, resp);
-        sendCorsJson(request, 200, "application/json", resp);
+    sendCorsJsonDoc(request, 200, doc);
     });
 
     server->on("/api/tags", HTTP_GET, [](AsyncWebServerRequest *request) {
         String payload = loadTagMetadataJson();
-        sendCorsJson(request, 200, "application/json", payload);
+        DynamicJsonDocument doc(4096);
+        DeserializationError err = deserializeJson(doc, payload);
+        if (err) {
+            // fallback to raw string if stored payload is not valid JSON
+            sendCorsJson(request, 200, "application/json", payload);
+            return;
+        }
+        sendCorsJsonDoc(request, 200, doc);
     });
 }

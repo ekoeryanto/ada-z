@@ -22,6 +22,8 @@
 #include "wifi_manager_module.h"
 #include "storage_helpers.h"
 #include "web_api.h"
+#include "web_api_common.h"
+#include "json_helper.h"
 #include "i2c_helpers.h"
 #include "sensors_config.h"
 #include "current_pressure_sensor.h"
@@ -32,6 +34,12 @@
 #include "nvs_defaults.h"
 
 // Globals
+
+// Automatic SSE push tuning
+static float *lastSentValue = nullptr;             // last value we pushed for each sensor
+static unsigned long *lastSentMillis = nullptr;    // cooldown timer per sensor
+const float SSE_PUSH_DELTA = 0.02f; // push when value changes more than 0.02 (2% of full scale-ish)
+const unsigned long SSE_PUSH_COOLDOWN_MS = 2000; // don't push more than once per sensor within 2s
 
 // Timers
 unsigned long previousSensorMillis = 0;
@@ -127,6 +135,16 @@ void setup() {
 
     // Initialize sensor runtime settings module
     initSensorRuntimeSettings();
+
+    // Allocate SSE push tracking arrays
+    if (configuredNumSensors > 0) {
+        lastSentValue = new float[configuredNumSensors];
+        lastSentMillis = new unsigned long[configuredNumSensors];
+        for (int i = 0; i < configuredNumSensors; ++i) {
+            lastSentValue[i] = NAN; // not sent yet
+            lastSentMillis[i] = 0;
+        }
+    }
 
     setupTimeSync();
     setupAndConnectWiFi(); // Setup and connect to WiFi
@@ -261,6 +279,33 @@ void loop() {
                         rawVals[i] = raw;
                         smoothedVals[i] = smoothed;
                     }
+                }
+            }
+
+            // Automatic SSE push on significant change (independent of HTTP notification)
+            if (lastSentValue && lastSentMillis) {
+                bool send = false;
+                float prev = lastSentValue[i];
+                unsigned long lm = lastSentMillis[i];
+                if (isnan(prev)) {
+                    // never sent before, send initial
+                    send = true;
+                } else {
+                    float diff = fabs(volt - prev);
+                    if (diff >= SSE_PUSH_DELTA) send = true;
+                }
+                if (send && (millis() - lm >= SSE_PUSH_COOLDOWN_MS)) {
+                    // Build simple JSON payload and push
+                    DynamicJsonDocument p(256);
+                    p["pin_index"] = i;
+                    p["tag"] = String("AI") + String(i + 1);
+                    p["value"] = roundToDecimals(volt, 3);
+                    p["smoothed"] = roundToDecimals(smoothed, 3);
+                    p["raw"] = raw;
+                    String out; serializeJson(p, out);
+                    pushSseDebugMessage("sensor_debug", out);
+                    lastSentValue[i] = volt;
+                    lastSentMillis[i] = millis();
                 }
             }
         }
