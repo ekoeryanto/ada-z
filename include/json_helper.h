@@ -14,6 +14,19 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 String buildJsonString(JsonDocument &doc);
 
+// Helper factories for common {status, message} envelopes
+DynamicJsonDocument makeStatusDoc(const char* status,
+                                  const String &message = String(""),
+                                  size_t capacity = 160);
+DynamicJsonDocument makeErrorDoc(const String &message,
+                                 size_t capacity = 160);
+DynamicJsonDocument makeSuccessDoc(const String &message = String(""),
+                                   size_t capacity = 160);
+
+// Convenience to mutate an existing document with status/message fields
+void setStatusMessage(JsonDocument &doc, const char* status,
+                      const String &message = String(""));
+
 // Round a float to N decimal places (default 2) and return as float
 inline float roundToDecimals(float v, int decimals = 2) {
 	float mul = powf(10.0f, (float)decimals);

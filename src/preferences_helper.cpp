@@ -10,6 +10,6 @@ bool safePreferencesBegin(void* /*p_unused*/, const char *ns) {
 }
 
 float safeGetFloat(void* /*p_unused*/, const char *key, float def) {
-    // Read float from default namespace using storage_helpers
-    return loadFloatFromNVSns("config", key, def);
+    // Read float from default namespace using centralized NVS helpers
+    return NvsHelper::readFloat("config", key, def);
 }

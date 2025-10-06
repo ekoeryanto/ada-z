@@ -45,19 +45,15 @@ void registerSensorHandlers(AsyncWebServer *server) {
 
         String tag = request->hasParam("tag") ? request->getParam("tag")->value() : "";
         if (tag.length() == 0) {
-            DynamicJsonDocument r(128);
-            r["status"] = "error";
-            r["message"] = "Missing tag";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Missing tag");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
         int pinIndex = tagToIndex(tag);
         if (pinIndex < 0) {
-            DynamicJsonDocument r(128);
-            r["status"] = "error";
-            r["message"] = "Unknown tag";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Unknown tag");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
@@ -119,18 +115,14 @@ void registerSensorHandlers(AsyncWebServer *server) {
     AsyncCallbackJsonWebHandler* sensorsConfigHandler = new AsyncCallbackJsonWebHandler("/api/sensors/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
         if (doc.isNull()) {
-            DynamicJsonDocument r(128);
-            r["status"] = "error";
-            r["message"] = "Invalid JSON";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Invalid JSON");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
         if (!doc["sensors"].is<JsonArray>()) {
-            DynamicJsonDocument r(160);
-            r["status"] = "error";
-            r["message"] = "Missing sensors array";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Missing sensors array", 160);
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
@@ -146,12 +138,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
             saveIntToNVSns("sensors", enKey.c_str(), enabled ? 1 : 0);
             saveULongToNVSns("sensors", ivKey.c_str(), interval);
         }
-        {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "success";
-            resp["message"] = "Sensor config updated";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeSuccessDoc("Sensor config updated");
+        sendCorsJsonDoc(request, 200, resp);
     });
     sensorsConfigHandler->setMaxContentLength(2048);
     server->addHandler(sensorsConfigHandler);
@@ -190,10 +178,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
         // Delegate to existing logic in web_api.cpp (keeps behavior identical)
         JsonObject doc = json.as<JsonObject>();
         if (doc.isNull()) {
-            DynamicJsonDocument r(128);
-            r["status"] = "error";
-            r["message"] = "Invalid JSON";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Invalid JSON");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
@@ -210,10 +196,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
         }
 
         if (pinIndex < 0) {
-            DynamicJsonDocument r(128);
-            r["status"] = "error";
-            r["message"] = "Invalid or missing pin_index/pin";
-            sendCorsJsonDoc(request, 400, r);
+            auto resp = makeErrorDoc("Invalid or missing pin_index/pin");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
@@ -227,12 +211,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
             float spanPressureValue = doc["span_pressure_value"].as<float>();
 
             saveCalibrationForPin(pinIndex, zeroRawAdc, spanRawAdc, zeroPressureValue, spanPressureValue);
-            {
-                DynamicJsonDocument resp(128);
-                resp["status"] = "success";
-                resp["message"] = "Calibration points saved";
-                sendCorsJsonDoc(request, 200, resp);
-            }
+            auto resp = makeSuccessDoc("Calibration points saved");
+            sendCorsJsonDoc(request, 200, resp);
             return;
         }
 
@@ -241,12 +221,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
             float currentRawAdc = getSmoothedADC(pinIndex);
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, currentRawAdc, cal.spanRawAdc, 0.0f, cal.spanPressureValue);
-            {
-                DynamicJsonDocument resp(128);
-                resp["status"] = "success";
-                resp["message"] = "Zero calibration set";
-                sendCorsJsonDoc(request, 200, resp);
-            }
+            auto resp = makeSuccessDoc("Zero calibration set");
+            sendCorsJsonDoc(request, 200, resp);
             return;
         }
 
@@ -255,21 +231,13 @@ void registerSensorHandlers(AsyncWebServer *server) {
             float currentRawAdc = getSmoothedADC(pinIndex);
             struct SensorCalibration cal = getCalibrationForPin(pinIndex);
             saveCalibrationForPin(pinIndex, cal.zeroRawAdc, currentRawAdc, cal.zeroPressureValue, doc["span_pressure_value"].as<float>());
-            {
-                DynamicJsonDocument resp(128);
-                resp["status"] = "success";
-                resp["message"] = "Span calibration set";
-                sendCorsJsonDoc(request, 200, resp);
-            }
+            auto resp = makeSuccessDoc("Span calibration set");
+            sendCorsJsonDoc(request, 200, resp);
             return;
         }
 
-        {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "error";
-            resp["message"] = "Invalid calibration parameters";
-            sendCorsJsonDoc(request, 400, resp);
-        }
+        auto resp = makeErrorDoc("Invalid calibration parameters");
+        sendCorsJsonDoc(request, 400, resp);
     });
     calPinHandler->setMaxContentLength(1024);
     server->addHandler(calPinHandler);
@@ -281,17 +249,17 @@ void registerSensorHandlers(AsyncWebServer *server) {
             saveCalibrationForPin(i, 0.0f, 4095.0f, 0.0f, 10.0f);
         }
         setupVoltagePressureSensor();
-        {
-            DynamicJsonDocument resp(160);
-            resp["status"] = "success";
-            resp["message"] = "Default calibration applied to all sensors";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeSuccessDoc("Default calibration applied to all sensors", 160);
+        sendCorsJsonDoc(request, 200, resp);
     });
 
     AsyncCallbackJsonWebHandler* calDefPinHandler = new AsyncCallbackJsonWebHandler("/api/calibrate/default/pin", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-    if (doc.isNull()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid JSON"; sendCorsJsonDoc(request, 400, r); return; }
+        if (doc.isNull()) {
+            auto resp = makeErrorDoc("Invalid JSON");
+            sendCorsJsonDoc(request, 400, resp);
+            return;
+        }
         int pinIndex = -1;
         if (!doc["pin"].isNull()) {
             int pinNumber = doc["pin"].as<int>();
@@ -299,20 +267,19 @@ void registerSensorHandlers(AsyncWebServer *server) {
         } else if (!doc["tag"].isNull()) {
             pinIndex = tagToIndex(doc["tag"].as<String>());
         } else {
-            {
-                DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Missing pin or tag"; sendCorsJsonDoc(request, 400, r);
-            }
+            auto resp = makeErrorDoc("Missing pin or tag");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
-    if (pinIndex < 0) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Unknown sensor/pin"; sendCorsJsonDoc(request, 400, r); return; }
+        if (pinIndex < 0) {
+            auto resp = makeErrorDoc("Unknown sensor/pin");
+            sendCorsJsonDoc(request, 400, resp);
+            return;
+        }
         saveCalibrationForPin(pinIndex, 0.0f, 4095.0f, 0.0f, 10.0f);
         setupVoltagePressureSensor();
-        {
-            DynamicJsonDocument resp(160);
-            resp["status"] = "success";
-            resp["message"] = "Default calibration applied to pin";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeSuccessDoc("Default calibration applied to pin", 160);
+        sendCorsJsonDoc(request, 200, resp);
     });
     calDefPinHandler->setMaxContentLength(256);
     server->addHandler(calDefPinHandler);
@@ -332,7 +299,11 @@ void registerSensorHandlers(AsyncWebServer *server) {
 
     AsyncCallbackJsonWebHandler* adcConfigHandler = new AsyncCallbackJsonWebHandler("/api/adc/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-    if (doc.isNull()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid JSON"; sendCorsJsonDoc(request, 400, r); return; }
+        if (doc.isNull()) {
+            auto resp = makeErrorDoc("Invalid JSON");
+            sendCorsJsonDoc(request, 400, resp);
+            return;
+        }
         bool changed = false;
         if (!doc["adc_num_samples"].isNull()) {
             int ns = doc["adc_num_samples"].as<int>();
@@ -380,14 +351,10 @@ void registerSensorHandlers(AsyncWebServer *server) {
             changed = true;
         }
         if (changed) {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "success";
-            resp["message"] = "ADC config updated";
+            auto resp = makeSuccessDoc("ADC config updated");
             sendCorsJsonDoc(request, 200, resp);
         } else {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "error";
-            resp["message"] = "No supported keys provided";
+            auto resp = makeErrorDoc("No supported keys provided");
             sendCorsJsonDoc(request, 400, resp);
         }
     });
@@ -398,22 +365,14 @@ void registerSensorHandlers(AsyncWebServer *server) {
     server->on("/api/adc/reseed", HTTP_POST, [](AsyncWebServerRequest *request) {
         clearSampleStore();
         setupVoltagePressureSensor();
-        {
-            DynamicJsonDocument resp(192);
-            resp["status"] = "success";
-            resp["message"] = "ADC smoothed values reseeded and sample buffers cleared";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeSuccessDoc("ADC smoothed values reseeded and sample buffers cleared", 192);
+        sendCorsJsonDoc(request, 200, resp);
     });
 
     server->on("/api/ads/reseed", HTTP_POST, [](AsyncWebServerRequest *request) {
         clearAdsBuffers();
-        {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "success";
-            resp["message"] = "ADS buffers cleared and reseeded";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeSuccessDoc("ADS buffers cleared and reseeded");
+        sendCorsJsonDoc(request, 200, resp);
     });
 
     // SSE debug push endpoint (JSON POST). This endpoint is intentionally
@@ -421,7 +380,11 @@ void registerSensorHandlers(AsyncWebServer *server) {
     // meant for quick debugging of individual sensor channels.
     AsyncCallbackJsonWebHandler* sseDebugHandler = new AsyncCallbackJsonWebHandler("/api/sse/debug", [](AsyncWebServerRequest *request, JsonVariant &json) {
         JsonObject doc = json.as<JsonObject>();
-    if (doc.isNull()) { DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid JSON"; sendCorsJsonDoc(request, 400, r); return; }
+        if (doc.isNull()) {
+            auto resp = makeErrorDoc("Invalid JSON");
+            sendCorsJsonDoc(request, 400, resp);
+            return;
+        }
 
         int pinIndex = -1;
         if (doc.containsKey("pin_index") && doc["pin_index"].is<int>()) {
@@ -431,9 +394,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
         }
 
         if (pinIndex < 0 || pinIndex >= getNumVoltageSensors()) {
-            {
-                DynamicJsonDocument r(128); r["status"] = "error"; r["message"] = "Invalid or missing pin_index/tag"; sendCorsJsonDoc(request, 400, r);
-            }
+            auto resp = makeErrorDoc("Invalid or missing pin_index/tag");
+            sendCorsJsonDoc(request, 400, resp);
             return;
         }
 
@@ -473,12 +435,9 @@ void registerSensorHandlers(AsyncWebServer *server) {
         pushSseDebugMessage("sensor_debug", out);
 
         // Also return a quick acknowledgement
-        {
-            DynamicJsonDocument resp(128);
-            resp["status"] = "sent";
-            resp["event"] = "sensor_debug";
-            sendCorsJsonDoc(request, 200, resp);
-        }
+        auto resp = makeStatusDoc("sent");
+        resp["event"] = "sensor_debug";
+        sendCorsJsonDoc(request, 200, resp);
     });
     sseDebugHandler->setMaxContentLength(1024);
     server->addHandler(sseDebugHandler);

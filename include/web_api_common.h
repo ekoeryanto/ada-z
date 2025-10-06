@@ -36,6 +36,12 @@ void sendCorsJson(AsyncWebServerRequest *request, int code, const char* contentT
 // Stream a JsonDocument directly to the client using AsyncResponseStream (no intermediate String)
 void sendCorsJsonDoc(AsyncWebServerRequest *request, int code, JsonDocument &doc);
 
+// Convenience wrappers for common {status,message} responses
+void sendJsonError(AsyncWebServerRequest *request, int code, const String &message,
+                   size_t capacity = 160);
+void sendJsonSuccess(AsyncWebServerRequest *request, int code, const String &message = String(""),
+                     size_t capacity = 160);
+
 // Tag/index and calibration sampling helpers (moved from web_api.cpp)
 int tagToIndex(const String &tag);
 void captureCalibrationSamples(int pinIndex, int requestedSamples,

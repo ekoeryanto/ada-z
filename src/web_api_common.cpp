@@ -47,6 +47,16 @@ void sendCorsJsonDoc(AsyncWebServerRequest *request, int code, JsonDocument &doc
     request->send(response);
 }
 
+void sendJsonError(AsyncWebServerRequest *request, int code, const String &message, size_t capacity) {
+    auto doc = makeErrorDoc(message, capacity);
+    sendCorsJsonDoc(request, code, doc);
+}
+
+void sendJsonSuccess(AsyncWebServerRequest *request, int code, const String &message, size_t capacity) {
+    auto doc = makeSuccessDoc(message, capacity);
+    sendCorsJsonDoc(request, code, doc);
+}
+
 const char* contentTypeFromPath(const String &path) {
     if (path.endsWith(".html")) return "text/html";
     if (path.endsWith(".htm")) return "text/html";

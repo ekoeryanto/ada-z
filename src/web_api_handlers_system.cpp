@@ -9,12 +9,7 @@ void registerSystemHandlers(AsyncWebServer *server) {
 
     server->on("/api/time/sync", HTTP_POST, [](AsyncWebServerRequest *request) {
         syncNtp(isRtcPresent());
-        {
-            DynamicJsonDocument r(128);
-            r["status"] = "ok";
-            r["message"] = "NTP sync triggered";
-            sendCorsJsonDoc(request, 200, r);
-        }
+        sendJsonSuccess(request, 200, "NTP sync triggered");
     });
 
     server->on("/api/time/status", HTTP_GET, [](AsyncWebServerRequest *request) {

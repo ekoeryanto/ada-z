@@ -1,9 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
-#include <Preferences.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include "nvs_helper.h"
 
 // This header provides small helper functions for NVS (Preferences) and LittleFS storage
 // Designed for ESP32 + PlatformIO projects. Keep operations small and resilient.
@@ -21,99 +21,48 @@ static bool initLittleFS() {
 }
 
 // NVS helpers (wrap Preferences open/close per operation to be safe on concurrency)
-static void saveStringToNVS(const char* key, const String &value) {
-    Preferences p;
-    p.begin(SH_PREF_NAMESPACE, false);
-    p.putString(key, value);
-    p.end();
-}
+static void saveStringToNVS(const char* key, const String &value) { NvsHelper::writeString(SH_PREF_NAMESPACE, key, value); }
 
-static String loadStringFromNVS(const char* key, const String &def = String("")) {
-    Preferences p;
-    p.begin(SH_PREF_NAMESPACE, false);
-    String v = p.getString(key, def);
-    p.end();
-    return v;
-}
+static String loadStringFromNVS(const char* key, const String &def = String("")) { return NvsHelper::readString(SH_PREF_NAMESPACE, key, def); }
 
 // Namespace-aware variants (specify NVS namespace explicitly)
-static void saveStringToNVSns(const char* ns, const char* key, const String &value) {
-    Preferences p;
-    p.begin(ns, false);
-    p.putString(key, value);
-    p.end();
-}
+static void saveStringToNVSns(const char* ns, const char* key, const String &value) { NvsHelper::writeString(ns, key, value); }
 
-static String loadStringFromNVSns(const char* ns, const char* key, const String &def = String("")) {
-    Preferences p;
-    p.begin(ns, false);
-    String v = p.getString(key, def);
-    p.end();
-    return v;
-}
+static String loadStringFromNVSns(const char* ns, const char* key, const String &def = String("")) { return NvsHelper::readString(ns, key, def); }
 
 // Namespace-aware variants for basic types
-static void saveBoolToNVSns(const char* ns, const char* key, bool v) { Preferences p; p.begin(ns, false); p.putBool(key, v); p.end(); }
-static bool loadBoolFromNVSns(const char* ns, const char* key, bool def = false) { Preferences p; p.begin(ns, false); bool v = p.getBool(key, def); p.end(); return v; }
+static void saveBoolToNVSns(const char* ns, const char* key, bool v) { NvsHelper::writeBool(ns, key, v); }
+static bool loadBoolFromNVSns(const char* ns, const char* key, bool def = false) { return NvsHelper::readBool(ns, key, def); }
 
-static void saveULongToNVSns(const char* ns, const char* key, unsigned long v) { Preferences p; p.begin(ns, false); p.putULong(key, v); p.end(); }
-static unsigned long loadULongFromNVSns(const char* ns, const char* key, unsigned long def = 0) { Preferences p; p.begin(ns, false); unsigned long v = p.getULong(key, def); p.end(); return v; }
+static void saveULongToNVSns(const char* ns, const char* key, unsigned long v) { NvsHelper::writeUInt(ns, key, v); }
+static unsigned long loadULongFromNVSns(const char* ns, const char* key, unsigned long def = 0) { return NvsHelper::readUInt(ns, key, def); }
 
-static void saveFloatToNVSns(const char* ns, const char* key, float v) { Preferences p; p.begin(ns, false); p.putFloat(key, v); p.end(); }
-static float loadFloatFromNVSns(const char* ns, const char* key, float def = 0.0f) { Preferences p; p.begin(ns, false); float v = p.getFloat(key, def); p.end(); return v; }
+static void saveFloatToNVSns(const char* ns, const char* key, float v) { NvsHelper::writeFloat(ns, key, v); }
+static float loadFloatFromNVSns(const char* ns, const char* key, float def = 0.0f) { return NvsHelper::readFloat(ns, key, def); }
 
-static void saveBoolToNVS(const char* key, bool v) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putBool(key, v); p.end();
-}
-static bool loadBoolFromNVS(const char* key, bool def = false) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); bool v = p.getBool(key, def); p.end(); return v;
-}
+static void saveBoolToNVS(const char* key, bool v) { NvsHelper::writeBool(SH_PREF_NAMESPACE, key, v); }
+static bool loadBoolFromNVS(const char* key, bool def = false) { return NvsHelper::readBool(SH_PREF_NAMESPACE, key, def); }
 
-static void saveULongToNVS(const char* key, unsigned long v) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putULong(key, v); p.end();
-}
-static unsigned long loadULongFromNVS(const char* key, unsigned long def = 0) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); unsigned long v = p.getULong(key, def); p.end(); return v;
-}
+static void saveULongToNVS(const char* key, unsigned long v) { NvsHelper::writeUInt(SH_PREF_NAMESPACE, key, v); }
+static unsigned long loadULongFromNVS(const char* key, unsigned long def = 0) { return NvsHelper::readUInt(SH_PREF_NAMESPACE, key, def); }
 
-static void saveFloatToNVS(const char* key, float v) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putFloat(key, v); p.end();
-}
-static float loadFloatFromNVS(const char* key, float def = 0.0f) {
-    Preferences p; p.begin(SH_PREF_NAMESPACE, false); float v = p.getFloat(key, def); p.end(); return v;
-}
+static void saveFloatToNVS(const char* key, float v) { NvsHelper::writeFloat(SH_PREF_NAMESPACE, key, v); }
+static float loadFloatFromNVS(const char* key, float def = 0.0f) { return NvsHelper::readFloat(SH_PREF_NAMESPACE, key, def); }
 
 // Int helpers (Preferences uses 32-bit ints)
-static void saveIntToNVS(const char* key, int v) { Preferences p; p.begin(SH_PREF_NAMESPACE, false); p.putInt(key, v); p.end(); }
-static int loadIntFromNVS(const char* key, int def = 0) { Preferences p; p.begin(SH_PREF_NAMESPACE, false); int v = p.getInt(key, def); p.end(); return v; }
+static void saveIntToNVS(const char* key, int v) { NvsHelper::writeInt(SH_PREF_NAMESPACE, key, v); }
+static int loadIntFromNVS(const char* key, int def = 0) { return NvsHelper::readInt(SH_PREF_NAMESPACE, key, def); }
 
 // Namespace-aware int helpers
-static void saveIntToNVSns(const char* ns, const char* key, int v) { Preferences p; p.begin(ns, false); p.putInt(key, v); p.end(); }
-static int loadIntFromNVSns(const char* ns, const char* key, int def = 0) { Preferences p; p.begin(ns, false); int v = p.getInt(key, def); p.end(); return v; }
+static void saveIntToNVSns(const char* ns, const char* key, int v) { NvsHelper::writeInt(ns, key, v); }
+static int loadIntFromNVSns(const char* ns, const char* key, int def = 0) { return NvsHelper::readInt(ns, key, def); }
 
 // Byte array helpers for storing binary blobs
-static bool saveBytesToNVSns(const char* ns, const char* key, const void* data, size_t len) {
-    Preferences p; p.begin(ns, false);
-    size_t written = p.putBytes(key, data, len);
-    p.end();
-    return written == len;
-}
+static bool saveBytesToNVSns(const char* ns, const char* key, const void* data, size_t len) { return NvsHelper::writeBytes(ns, key, data, len); }
 
-static size_t getBytesLengthFromNVSns(const char* ns, const char* key) {
-    Preferences p; p.begin(ns, false);
-    size_t len = p.getBytesLength(key);
-    p.end();
-    return len;
-}
+static size_t getBytesLengthFromNVSns(const char* ns, const char* key) { return NvsHelper::bytesLength(ns, key); }
 
-static bool loadBytesFromNVSns(const char* ns, const char* key, void* outBuf, size_t len) {
-    Preferences p; p.begin(ns, false);
-    size_t have = p.getBytesLength(key);
-    if (have != len) { p.end(); return false; }
-    p.getBytes(key, outBuf, len);
-    p.end();
-    return true;
-}
+static bool loadBytesFromNVSns(const char* ns, const char* key, void* outBuf, size_t len) { return NvsHelper::readBytes(ns, key, outBuf, len); }
 
 // LittleFS helpers
 static bool writeFileLittleFS(const char* path, const String &content) {
