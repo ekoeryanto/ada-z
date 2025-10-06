@@ -38,5 +38,6 @@ const links = [
   { to: '/modbus-poll', label: 'Modbus Poll', icon: 'mdi:magnify-scan' },
   { to: '/notifications', label: 'Notifications', icon: 'mdi:bell-outline' },
   { to: '/calibration', label: 'Calibration', icon: 'mdi:tune' },
+  { to: '/sse-debug', label: 'SSE Debug', icon: 'mdi:progress-wrench' },
 ];
 </script>

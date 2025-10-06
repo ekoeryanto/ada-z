@@ -12,6 +12,8 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      // Proxy SSE endpoint(s) so EventSource can connect to the device during dev
+      // Keep only /api proxied; SSE stream will live under /api/sse/stream
     },
   },
 });

@@ -18,9 +18,23 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncJson.h>
 
+// Need AsyncEventSource for SSE
+#include <AsyncEventSource.h>
+
 // Register the handlers previously defined inline in web_api.cpp
 void registerSensorHandlers(AsyncWebServer *server) {
     if (!server) return;
+
+    // Create the debug SSE event source if not already created.
+    if (!eventSourceDebug) {
+        eventSourceDebug = new AsyncEventSource("/sse/debug_sensors");
+        server->addHandler(eventSourceDebug);
+    }
+    // Also register alias under /api so the Vite dev server proxy can forward it
+    if (!eventSourceDebugAlias) {
+        eventSourceDebugAlias = new AsyncEventSource("/api/sse/stream");
+        server->addHandler(eventSourceDebugAlias);
+    }
 
     // Expose sensor/tag endpoints
     auto handleTagRead = [](AsyncWebServerRequest *request) {
@@ -286,6 +300,66 @@ void registerSensorHandlers(AsyncWebServer *server) {
         clearAdsBuffers();
         sendCorsJson(request, 200, "application/json", "{\"status\":\"success\", \"message\":\"ADS buffers cleared and reseeded\"}");
     });
+
+    // SSE debug push endpoint (JSON POST). This endpoint is intentionally
+    // lightweight and DOES NOT use the central sensors readings builder; it's
+    // meant for quick debugging of individual sensor channels.
+    AsyncCallbackJsonWebHandler* sseDebugHandler = new AsyncCallbackJsonWebHandler("/api/sse/debug", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        JsonObject doc = json.as<JsonObject>();
+        if (doc.isNull()) { sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}"); return; }
+
+        int pinIndex = -1;
+        if (doc.containsKey("pin_index") && doc["pin_index"].is<int>()) {
+            pinIndex = doc["pin_index"].as<int>();
+        } else if (doc.containsKey("tag") && doc["tag"].is<const char*>()) {
+            pinIndex = tagToIndex(String(doc["tag"].as<const char*>()));
+        }
+
+        if (pinIndex < 0 || pinIndex >= getNumVoltageSensors()) {
+            sendCorsJson(request, 400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid or missing pin_index/tag\"}");
+            return;
+        }
+
+        // Build a small JSON payload with direct/raw reads for debugging.
+        DynamicJsonDocument payload(512);
+        payload["pin_index"] = pinIndex;
+        payload["tag"] = String("AI") + String(pinIndex + 1);
+        int pin = getVoltageSensorPin(pinIndex);
+        payload["pin"] = pin;
+
+        // Raw analog read
+        int raw = analogRead(pin);
+        payload["raw_adc"] = raw;
+
+        // Smoothed values if available
+        float smoothed = getSmoothedADC(pinIndex);
+        payload["smoothed_adc"] = roundToDecimals(smoothed, 2);
+
+        // Voltage/converted estimate — this uses per-sensor conversion but not the global readings builder
+        float volt = getSmoothedVoltagePressure(pinIndex);
+        payload["voltage"] = roundToDecimals(volt, 3);
+
+        // If ADS-based sensor, include ADS smoothed mA if available
+        // getAdsSmoothedMa takes channel index; we try to call it and include if positive
+        float adsMa = 0.0f;
+        bool hasAds = false;
+        // Defensive: only call ADS function if it exists; the symbol is available when ADS is used
+        adsMa = getAdsSmoothedMa(pinIndex);
+        if (adsMa > 0.0f) {
+            payload["ads_ma"] = roundToDecimals(adsMa, 3);
+            hasAds = true;
+        }
+
+        // Serialize and push via SSE
+        String out;
+        serializeJson(payload, out);
+        pushSseDebugMessage("sensor_debug", out);
+
+        // Also return a quick acknowledgement
+        sendCorsJson(request, 200, "application/json", "{\"status\":\"sent\",\"event\":\"sensor_debug\"}");
+    });
+    sseDebugHandler->setMaxContentLength(1024);
+    server->addHandler(sseDebugHandler);
 
     // Auto-calibration endpoints previously defined in web_api.cpp are intentionally left where they were
 }

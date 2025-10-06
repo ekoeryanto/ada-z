@@ -31,6 +31,11 @@ const routes = [
     name: 'calibration',
     component: () => import('../views/CalibrationView.vue'),
   },
+  {
+    path: '/sse-debug',
+    name: 'sse-debug',
+    component: () => import('../views/SseDebugView.vue'),
+  },
 ];
 
 const router = createRouter({
