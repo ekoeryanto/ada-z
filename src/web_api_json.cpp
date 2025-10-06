@@ -9,30 +9,78 @@
 #include "time_sync.h"
 #include "device_id.h"
 #include "wifi_manager_module.h"
+#include "modbus_manager.h"
 #include "json_helper.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <math.h>
+
+namespace {
+
+JsonObject addMeasurement(JsonArray readings, const char *name, float value, const char *unit, int decimals) {
+    JsonObject meas = readings.add<JsonObject>();
+    meas["name"] = name;
+    if (unit && unit[0] != '\0') meas["unit"] = unit;
+    if (!isnan(value)) {
+        meas["value"] = roundToDecimals(value, decimals);
+    } else {
+        meas["status"] = "unavailable";
+    }
+    return meas;
+}
+
+const char *modbusDataTypeToStr(ModbusDataType type) {
+    switch (type) {
+        case ModbusDataType::UINT16: return "uint16";
+        case ModbusDataType::INT16: return "int16";
+        case ModbusDataType::UINT32: return "uint32";
+        case ModbusDataType::INT32: return "int32";
+        case ModbusDataType::FLOAT32: return "float32";
+        default: return "unknown";
+    }
+}
+
+const char *modbusRegisterTypeToStr(ModbusRegisterType type) {
+    return type == ModbusRegisterType::INPUT_REGISTER ? "input" : "holding";
+}
+
+String buildModbusSensorId(const ModbusSlave &slave, const ModbusRegister &reg) {
+    String base = String("MB") + String(slave.address);
+    if (reg.key.length() > 0) {
+        base += "." + reg.key;
+    } else if (reg.label.length() > 0) {
+        String label = reg.label;
+        label.replace(' ', '_');
+        base += "." + label;
+    } else {
+        base += ".reg" + String(reg.address);
+    }
+    return base;
+}
+
+} // namespace
 
 // Note: this implementation reuses existing getters from the project
 // (getNumVoltageSensors, getVoltageSensorPin, getSmoothedADC, etc.)
 void buildSensorsReadingsJson(JsonDocument &doc) {
-    int n = getNumVoltageSensors();
-    const int ads_channels = 2;
+    doc.clear();
 
-    // Timestamp and network info
+    const bool wifiUp = isWifiConnected();
     doc["timestamp"] = getIsoTimestamp();
-    {
-        JsonObject net = doc["network"].to<JsonObject>();
-        net["connected"] = isWifiConnected() ? 1 : 0;
-        net["ip"] = isWifiConnected() ? WiFi.localIP().toString() : String("");
-        net["gateway"] = isWifiConnected() ? WiFi.gatewayIP().toString() : String("");
-        net["mac"] = WiFi.macAddress();
-        net["rssi"] = isWifiConnected() ? WiFi.RSSI() : 0;
-    }
     doc["rtu"] = String(getChipId());
-    JsonArray tags = doc["tags"].to<JsonArray>();
 
-    for (int i = 0; i < n; ++i) {
+    JsonObject net = doc["network"].to<JsonObject>();
+    net["status"] = wifiUp ? "connected" : "disconnected";
+    if (wifiUp) {
+        net["ip"] = WiFi.localIP().toString();
+        net["rssi"] = WiFi.RSSI();
+    }
+
+    JsonArray sensors = doc["sensors"].to<JsonArray>();
+
+    const int numVoltage = getNumVoltageSensors();
+    for (int i = 0; i < numVoltage; ++i) {
+        bool enabled = getSensorEnabled(i);
         int pin = getVoltageSensorPin(i);
         int raw = analogRead(pin);
         float smoothed = getSmoothedADC(i);
@@ -43,107 +91,103 @@ void buildSensorsReadingsJson(JsonDocument &doc) {
         }
         bool saturated = isPinSaturated(i);
         if (raw == 4095 && !saturated) raw = (int)round(smoothed);
-        float voltage_smoothed_v = convert010V(round(smoothed));
-        struct SensorCalibration cal = getCalibrationForPin(i);
-        float pressure_from_raw = (raw * cal.scale) + cal.offset;
-        float pressure_from_smoothed = (round(smoothed) * cal.scale) + cal.offset;
-        float pressure_final = pressure_from_smoothed;
 
-        JsonObject s = tags.add<JsonObject>();
-        s["id"] = String("AI") + String(i + 1);
-        s["port"] = pin;
-        s["index"] = i;
-        s["source"] = "adc";
-        s["enabled"] = getSensorEnabled(i) ? 1 : 0;
+        float voltageRaw = convert010V(raw);
+        float voltageFiltered = convert010V(round(smoothed));
+        SensorCalibration cal = getCalibrationForPin(i);
+        float pressureRaw = (raw * cal.scale) + cal.offset;
+        float pressureFiltered = (round(smoothed) * cal.scale) + cal.offset;
 
-        JsonObject val = s["value"].to<JsonObject>();
-        val["raw"] = raw;
-        val["filtered"] = smoothed;
-        JsonObject scaled = val["scaled"].to<JsonObject>();
-        scaled["raw"] = roundToDecimals(convert010V(raw), 3);
-        scaled["filtered"] = roundToDecimals(voltage_smoothed_v, 3);
-        scaled["value"] = roundToDecimals(voltage_smoothed_v, 2);
-        scaled["unit"] = "volt";
+        JsonObject sensor = sensors.add<JsonObject>();
+        sensor["id"] = String("AI") + String(i + 1);
+        sensor["type"] = "adc";
+        sensor["enabled"] = enabled ? 1 : 0;
+        sensor["status"] = !enabled ? "disabled" : (saturated ? "alert" : "ok");
+        sensor["port"] = pin;
 
-        JsonObject conv = val["converted"].to<JsonObject>();
-        conv["value"] = roundToDecimals(pressure_final, 2);
-        conv["unit"] = "bar";
-        conv["semantic"] = "pressure";
-        conv["raw"] = roundToDecimals(pressure_from_raw, 2);
-        conv["filtered"] = roundToDecimals(pressure_from_smoothed, 2);
+        JsonObject meta = sensor["meta"].to<JsonObject>();
+        meta["raw_adc"] = raw;
+        meta["smoothed_adc"] = roundToDecimals(smoothed, 2);
+        meta["cal_zero"] = cal.zeroPressureValue;
+        meta["cal_span"] = cal.spanPressureValue;
+        meta["cal_scale"] = roundToDecimals(cal.scale, 4);
+        meta["cal_offset"] = roundToDecimals(cal.offset, 3);
+        if (saturated) meta["saturated"] = 1;
 
-        JsonObject audit = val["audit"].to<JsonObject>();
-        float measured_voltage_v = voltage_smoothed_v;
-        float expected_voltage_v = (pressure_final / DEFAULT_RANGE_BAR) * 10.0f;
-        audit["measured_voltage_v"] = roundToDecimals(measured_voltage_v, 3);
-        audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_v, 3);
-        audit["voltage_delta_v"] = roundToDecimals(measured_voltage_v - expected_voltage_v, 3);
+        JsonArray readings = sensor["readings"].to<JsonArray>();
+        JsonObject voltMeas = addMeasurement(readings, "voltage", voltageFiltered, "V", 3);
+        if (!isnan(voltageRaw)) voltMeas["raw"] = roundToDecimals(voltageRaw, 3);
 
-        JsonObject meta = s["meta"].to<JsonObject>();
-        meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
-        meta["cal_span_raw_adc"] = cal.spanRawAdc;
-        meta["cal_zero_pressure_value"] = cal.zeroPressureValue;
-        meta["cal_span_pressure_value"] = cal.spanPressureValue;
-        meta["cal_scale"] = cal.scale;
-        meta["cal_offset"] = cal.offset;
-        meta["saturated"] = saturated ? 1 : 0;
+        JsonObject pressureMeas = addMeasurement(readings, "pressure", pressureFiltered, "bar", 2);
+        if (!isnan(pressureRaw)) pressureMeas["raw"] = roundToDecimals(pressureRaw, 2);
     }
 
-    for (int ch = 0; ch <= 1; ++ch) {
+    for (int ch = 0; ch < 2; ++ch) {
         int16_t raw = readAdsRaw(ch);
         float mv = adsRawToMv(raw);
-        float tp_scale = getAdsTpScale(ch);
-        float ma = readAdsMa(ch, DEFAULT_SHUNT_OHM, DEFAULT_AMP_GAIN);
-        float depth_mm = computeDepthMm(ma, DEFAULT_CURRENT_INIT_MA, DEFAULT_RANGE_MM, DEFAULT_DENSITY_WATER);
-        float voltage_v = mv / 1000.0f;
-        float pressure_bar = (voltage_v / 10.0f) * DEFAULT_RANGE_BAR;
+        float currentMa = readAdsMa(ch, DEFAULT_SHUNT_OHM, DEFAULT_AMP_GAIN);
+        float depthMm = computeDepthMm(currentMa, DEFAULT_CURRENT_INIT_MA, DEFAULT_RANGE_MM, DEFAULT_DENSITY_WATER);
+        float tpScale = getAdsTpScale(ch);
+        float maSmoothed = getAdsSmoothedMa(ch);
+        float voltageSmoothed = (maSmoothed * tpScale) / 1000.0f;
+        float voltageRaw = mv / 1000.0f;
+        float pressureBar = (voltageSmoothed / 10.0f) * DEFAULT_RANGE_BAR;
 
-        JsonObject s = tags.add<JsonObject>();
-        s["id"] = String("ADS_A") + String(ch);
-        s["port"] = ch;
-        s["index"] = n + ch;
-        s["source"] = "ads1115";
+        JsonObject sensor = sensors.add<JsonObject>();
+        sensor["id"] = String("ADS") + String(ch);
+        sensor["type"] = "ads1115";
+        sensor["enabled"] = 1;
+        sensor["status"] = isnan(maSmoothed) ? "pending" : "ok";
+        sensor["channel"] = ch;
 
-        JsonObject val = s["value"].to<JsonObject>();
-        val["raw"] = raw;
-        float ma_smoothed = getAdsSmoothedMa(ch);
-        float mv_from_smoothed = ma_smoothed * tp_scale;
-        float voltage_from_smoothed = mv_from_smoothed / 1000.0f;
-        val["filtered"] = roundToDecimals(voltage_from_smoothed, 3);
-        JsonObject scaled = val["scaled"].to<JsonObject>();
-        scaled["raw"] = roundToDecimals(mv / 1000.0f, 3);
-        scaled["filtered"] = roundToDecimals(voltage_from_smoothed, 3);
-        scaled["value"] = roundToDecimals(mv / 1000.0f, 2);
-        scaled["unit"] = "volt";
-        JsonObject convA = val["converted"].to<JsonObject>();
-        convA["value"] = roundToDecimals(pressure_bar, 2);
-        convA["unit"] = "bar";
-        convA["semantic"] = "pressure";
-        convA["note"] = "TP5551 derived";
-        convA["raw"] = roundToDecimals(pressure_bar, 2);
-        float pressure_from_smoothed = (voltage_from_smoothed / 10.0f) * DEFAULT_RANGE_BAR;
-        convA["filtered"] = roundToDecimals(pressure_from_smoothed, 2);
+        JsonObject meta = sensor["meta"].to<JsonObject>();
+        meta["tp_scale_mv_per_ma"] = tpScale;
+        meta["raw_code"] = raw;
 
-        JsonObject audit = val["audit"].to<JsonObject>();
-        float measured_voltage_ads_v = mv / 1000.0f;
-        float expected_voltage_ads_v = (convA["value"].is<float>() ? convA["value"].as<float>() : (float)convA["value"].as<int>()) / DEFAULT_RANGE_BAR * 10.0f;
-        audit["expected_voltage_ads_v"] = roundToDecimals(expected_voltage_ads_v, 3);
-        audit["measured_voltage_v"] = roundToDecimals(measured_voltage_ads_v, 3);
-        audit["expected_voltage_v_from_pressure"] = roundToDecimals(expected_voltage_ads_v, 3);
-        audit["voltage_delta_v"] = roundToDecimals(measured_voltage_ads_v - expected_voltage_ads_v, 3);
+        JsonArray readings = sensor["readings"].to<JsonArray>();
+        JsonObject voltMeas = addMeasurement(readings, "voltage", voltageSmoothed, "V", 3);
+        if (!isnan(voltageRaw)) voltMeas["raw"] = roundToDecimals(voltageRaw, 3);
 
-        JsonObject meta = s["meta"].to<JsonObject>();
-        JsonObject meta_meas = meta["measurement"].to<JsonObject>();
-        meta_meas["mv"] = mv;
-        meta_meas["ma"] = ma;
-        meta["tp_model"] = String("TP5551");
-        meta["tp_scale_mv_per_ma"] = tp_scale;
-        meta["cal_tp_scale_mv_per_ma"] = tp_scale;
-        meta["ma_smoothed"] = ma_smoothed;
-        meta["depth_mm"] = depth_mm;
+        JsonObject currentMeas = addMeasurement(readings, "current", maSmoothed, "mA", 3);
+        if (!isnan(currentMa)) currentMeas["raw"] = roundToDecimals(currentMa, 3);
+
+        addMeasurement(readings, "pressure", pressureBar, "bar", 2);
+        addMeasurement(readings, "depth", depthMm, "mm", 0);
     }
 
-    doc["tags_total"] = tags.size();
+    const auto &slaves = getModbusSlaves();
+    for (const auto &slave : slaves) {
+        for (const auto &reg : slave.registers) {
+            String sensorId = buildModbusSensorId(slave, reg);
+            JsonObject sensor = sensors.add<JsonObject>();
+            sensor["id"] = sensorId;
+            sensor["type"] = "modbus";
+            sensor["enabled"] = slave.enabled ? 1 : 0;
+            if (!slave.enabled) {
+                sensor["status"] = "disabled";
+            } else if (!slave.online) {
+                sensor["status"] = "pending";
+            } else {
+                sensor["status"] = isnan(reg.value) ? "pending" : "ok";
+            }
+
+            JsonObject meta = sensor["meta"].to<JsonObject>();
+            meta["slave"] = slave.address;
+            if (reg.label.length() > 0) meta["label"] = reg.label;
+            meta["register"] = reg.address;
+            meta["unit"] = reg.unit;
+            meta["data_type"] = modbusDataTypeToStr(reg.data_type);
+            meta["register_type"] = modbusRegisterTypeToStr(reg.reg_type);
+            if (reg.last_update_ms > 0) meta["last_update_ms"] = reg.last_update_ms;
+
+            JsonArray readings = sensor["readings"].to<JsonArray>();
+            const char *name = reg.key.length() > 0 ? reg.key.c_str() : (reg.label.length() > 0 ? reg.label.c_str() : "value");
+            JsonObject reading = addMeasurement(readings, name, reg.value, reg.unit.c_str(), 3);
+            if (reg.unit.length() == 0) reading.remove("unit");
+        }
+    }
+
+    doc["sensor_count"] = sensors.size();
 }
 
 void buildCalibrationJsonForPin(JsonDocument &doc, int pinIndex) {
