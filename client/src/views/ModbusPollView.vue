@@ -34,7 +34,7 @@
           </label>
           <label v-if="isReadOperation" class="grid gap-2">
             <span class="text-sm font-medium text-slate-300">Jumlah</span>
-            <input v-model.number="form.count" type="number" min="1" max="125" required class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 focus:border-brand-500/60 focus:outline-none" />
+            <input v-model.number="form.count" type="number" min="1" max="64" required class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 focus:border-brand-500/60 focus:outline-none" />
           </label>
           <label v-if="isWriteSingle" class="grid gap-2">
             <span class="text-sm font-medium text-slate-300">Nilai</span>
@@ -52,7 +52,7 @@
         <div v-if="isWriteMultiple" class="grid gap-2">
           <span class="text-sm font-medium text-slate-300">Nilai Register (pisahkan dengan koma atau spasi)</span>
           <textarea v-model="form.valuesText" rows="3" class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-200 focus:border-brand-500/60 focus:outline-none" placeholder="Contoh: 100, 200, 300"></textarea>
-          <span class="text-xs text-slate-500">Maksimum 123 register per permintaan.</span>
+          <span class="text-xs text-slate-500">Maksimum 64 register per permintaan.</span>
         </div>
 
         <div class="flex justify-end">
@@ -127,6 +127,7 @@ const isReadOperation = computed(() => form.operation === 'read_holding' || form
 const isWriteSingle = computed(() => form.operation === 'write_single');
 const isWriteMultiple = computed(() => form.operation === 'write_multiple');
 const baudRateOptions = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+const MAX_REG_PER_REQUEST = 64;
 
 async function sendPollRequest() {
   polling.value = true;
@@ -149,8 +150,8 @@ async function sendPollRequest() {
     }
 
     if (isReadOperation.value) {
-      if (!form.count || form.count < 1 || form.count > 125) {
-        throw new Error('Jumlah register harus 1-125');
+      if (!form.count || form.count < 1 || form.count > MAX_REG_PER_REQUEST) {
+        throw new Error('Jumlah register harus 1-64');
       }
       payload.count = form.count;
     } else if (isWriteSingle.value) {
@@ -170,8 +171,8 @@ async function sendPollRequest() {
       if (tokens.length === 0) {
         throw new Error('Masukkan minimal satu nilai register');
       }
-      if (tokens.length > 123) {
-        throw new Error('Maksimal 123 register per permintaan');
+      if (tokens.length > MAX_REG_PER_REQUEST) {
+        throw new Error('Maksimal 64 register per permintaan');
       }
 
       const values = tokens.map((token) => {

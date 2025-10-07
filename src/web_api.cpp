@@ -663,6 +663,8 @@ void setupWebServer(int port /*= 80*/) {
             return;
         }
 
+        constexpr uint16_t kMaxFrameRegisters = 64; // ModbusMaster buffer limit
+
         switch (pollRequest.operation) {
             case ModbusPollOperation::READ_HOLDING:
             case ModbusPollOperation::READ_INPUT: {
@@ -671,8 +673,8 @@ void setupWebServer(int port /*= 80*/) {
                     return;
                 }
                 uint16_t count = obj["count"].as<uint16_t>();
-                if (count == 0 || count > 125) {
-                    sendJsonError(request, 400, "Invalid count (must be 1-125)");
+                if (count == 0 || count > kMaxFrameRegisters) {
+                    sendJsonError(request, 400, "Invalid count (must be 1-64)");
                     return;
                 }
                 pollRequest.count = static_cast<uint8_t>(count);
@@ -709,8 +711,8 @@ void setupWebServer(int port /*= 80*/) {
                     return;
                 }
                 JsonArray arr = obj["values"].as<JsonArray>();
-                if (arr.size() == 0 || arr.size() > 123) {
-                    sendJsonError(request, 400, "Invalid values count (must be 1-123)");
+                if (arr.size() == 0 || arr.size() > kMaxFrameRegisters) {
+                    sendJsonError(request, 400, "Invalid values count (must be 1-64)");
                     return;
                 }
                 pollRequest.values.reserve(arr.size());

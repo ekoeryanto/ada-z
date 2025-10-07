@@ -18,6 +18,7 @@ namespace {
 constexpr uint32_t DEFAULT_MODBUS_BAUD = 9600;
 uint32_t currentModbusBaud = DEFAULT_MODBUS_BAUD;
 constexpr unsigned long POLL_INTERVAL_MS = 1000;
+constexpr uint8_t MAX_MODBUS_REG_FRAME = ModbusMaster::ku8MaxBufferSize;
 
 HardwareSerial &rs485 = Serial2;
 ModbusMaster modbusNode;
@@ -52,6 +53,10 @@ std::vector<ModbusSlave> slaves;
 size_t currentSlaveIndex = 0;
 unsigned long lastPollTime = 0;
 String currentConfigJson;
+
+void modbusIdleTask() {
+    delay(1); // Yield to keep watchdog fed while waiting on bus
+}
 
 const char* toRegisterTypeString(ModbusRegisterType type) {
     return (type == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
@@ -212,6 +217,7 @@ void setupModbus() {
     rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
     modbusNode.preTransmission(preTransmission);
     modbusNode.postTransmission(postTransmission);
+    modbusNode.idle(modbusIdleTask);
 
     // Create the mutex used to protect Modbus operations. Use a normal binary
     // semaphore (mutex) so we don't disable interrupts while the bus is in use.
@@ -374,6 +380,10 @@ String pollModbus(const ModbusPollRequest& request) {
             break;
         case ModbusPollOperation::WRITE_MULTIPLE:
             if (!request.values.empty()) {
+                if (request.values.size() > MAX_MODBUS_REG_FRAME) {
+                    result = ModbusMaster::ku8MBIllegalDataAddress;
+                    break;
+                }
                 modbusNode.clearTransmitBuffer();
                 for (size_t i = 0; i < request.values.size(); ++i) {
                     modbusNode.setTransmitBuffer(i, request.values[i]);
@@ -413,7 +423,7 @@ String pollModbus(const ModbusPollRequest& request) {
         if (request.operation == ModbusPollOperation::READ_HOLDING ||
             request.operation == ModbusPollOperation::READ_INPUT) {
             JsonArray data = doc["data"].to<JsonArray>();
-            for (uint8_t i = 0; i < effectiveCount; i++) {
+            for (uint16_t i = 0; i < effectiveCount; i++) {
                 data.add(modbusNode.getResponseBuffer(i));
             }
         } else {
