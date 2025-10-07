@@ -1463,7 +1463,10 @@ void setupWebServer(int port /*= 80*/) {
             if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
             String childPath = sanitizeSdPath(fullPath);
             if (childPath.length() == 0) childPath = fullPath;
-            String displayName = String(entry.name());
+            if (rawName.length() == 0) {
+                rawName = childPath;
+            }
+            String displayName = rawName;
             if (displayName.endsWith("/")) displayName.remove(displayName.length() - 1);
             int idx = displayName.lastIndexOf('/');
             if (idx >= 0) displayName = displayName.substring(idx + 1);
