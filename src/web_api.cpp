@@ -1411,12 +1411,17 @@ void setupWebServer(int port /*= 80*/) {
 
     // Alternative SD directory listing that doesn't use openNextFile()
     server->on("/api/sd/files", HTTP_GET, [](AsyncWebServerRequest *request) {
+        Serial.printf("[SD] API Request - SD Ready: %s\n", sdReady ? "YES" : "NO");
+        Serial.printf("[SD] SD Card Info - Type: %d, Size: %lluMB\n", SD.cardType(), SD.cardSize() / (1024 * 1024));
+        
         if (!sdReady) {
             sendJsonError(request, 503, "SD card not ready");
             return;
         }
         String rawPath = request->hasParam("path") ? urlDecode(request->getParam("path")->value()) : "/";
         String path = sanitizeSdPath(rawPath);
+        Serial.printf("[SD] Request path: '%s' -> sanitized: '%s'\n", rawPath.c_str(), path.c_str());
+        
         if (path.length() == 0) {
             sendJsonError(request, 400, "Invalid path");
             return;
@@ -1440,19 +1445,37 @@ void setupWebServer(int port /*= 80*/) {
         std::vector<EntryTemp> temp;
         
         // Use proper ESP32 directory listing with openNextFile()
+        Serial.printf("[SD] Attempting to list directory: %s\n", path.c_str());
+        
         File dir = SD.open(path.c_str());
-        if (dir && dir.isDirectory()) {
+        if (!dir) {
+            Serial.printf("[SD] Failed to open directory: %s\n", path.c_str());
+        } else if (!dir.isDirectory()) {
+            Serial.printf("[SD] Path is not a directory: %s\n", path.c_str());
+            dir.close();
+        } else {
+            Serial.printf("[SD] Successfully opened directory: %s\n", path.c_str());
             dir.rewindDirectory();
             
+            int entryCount = 0;
             while (true) {
                 File entry = dir.openNextFile();
-                if (!entry) break;
+                if (!entry) {
+                    Serial.printf("[SD] No more entries, found %d total\n", entryCount);
+                    break;
+                }
                 
+                entryCount++;
                 String rawName = String(entry.name());
                 String fullPath = String(entry.path());
                 
+                Serial.printf("[SD] Entry %d: name='%s', path='%s', isDir=%d, size=%u\n", 
+                             entryCount, rawName.c_str(), fullPath.c_str(), 
+                             entry.isDirectory(), (uint32_t)entry.size());
+                
                 // Skip hidden/system files
                 if (rawName.startsWith(".")) {
+                    Serial.printf("[SD] Skipping hidden file: %s\n", rawName.c_str());
                     entry.close();
                     continue;
                 }
@@ -1460,6 +1483,7 @@ void setupWebServer(int port /*= 80*/) {
                 // Build proper paths
                 if (fullPath.length() == 0) {
                     fullPath = joinSdPath(path, rawName);
+                    Serial.printf("[SD] Built path: %s\n", fullPath.c_str());
                 }
                 
                 // Extract display name
@@ -1473,10 +1497,14 @@ void setupWebServer(int port /*= 80*/) {
                 
                 EntryTemp info { displayName, fullPath, isDir, size };
                 temp.push_back(info);
+                Serial.printf("[SD] Added entry: '%s' -> '%s' (dir=%d, size=%u)\n", 
+                             displayName.c_str(), fullPath.c_str(), isDir, size);
+                
                 entry.close();
                 yield();
             }
             dir.close();
+            Serial.printf("[SD] Final entry count: %d\n", (int)temp.size());
         }
         
         // Sort entries (directories first, then alphabetical)
