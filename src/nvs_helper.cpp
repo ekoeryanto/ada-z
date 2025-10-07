@@ -8,7 +8,14 @@ namespace {
     bool withPreferences(const char* ns, bool readOnly, const std::function<bool(Preferences&)> &fn) {
         Preferences prefs;
         if (!prefs.begin(ns, readOnly)) {
-            return false;
+            if (readOnly) {
+                // Fallback to read-write to allow namespace creation without spamming errors
+                if (!prefs.begin(ns, false)) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
         bool ok = fn(prefs);
         prefs.end();
@@ -26,7 +33,11 @@ bool writeString(const char* ns, const char* key, const String &value) {
 String readString(const char* ns, const char* key, const String &def) {
     String result = def;
     withPreferences(ns, true, [&](Preferences &p) {
-        result = p.getString(key, def);
+        if (p.isKey(key)) {
+            result = p.getString(key, def);
+        } else {
+            result = def;
+        }
         return true;
     });
     return result;
@@ -42,7 +53,11 @@ bool writeBool(const char* ns, const char* key, bool value) {
 bool readBool(const char* ns, const char* key, bool def) {
     bool result = def;
     withPreferences(ns, true, [&](Preferences &p) {
-        result = p.getBool(key, def);
+        if (p.isKey(key)) {
+            result = p.getBool(key, def);
+        } else {
+            result = def;
+        }
         return true;
     });
     return result;
@@ -58,7 +73,11 @@ bool writeUInt(const char* ns, const char* key, unsigned long value) {
 unsigned long readUInt(const char* ns, const char* key, unsigned long def) {
     unsigned long result = def;
     withPreferences(ns, true, [&](Preferences &p) {
-        result = p.getULong(key, def);
+        if (p.isKey(key)) {
+            result = p.getULong(key, def);
+        } else {
+            result = def;
+        }
         return true;
     });
     return result;
@@ -74,7 +93,11 @@ bool writeInt(const char* ns, const char* key, int value) {
 int readInt(const char* ns, const char* key, int def) {
     int result = def;
     withPreferences(ns, true, [&](Preferences &p) {
-        result = p.getInt(key, def);
+        if (p.isKey(key)) {
+            result = p.getInt(key, def);
+        } else {
+            result = def;
+        }
         return true;
     });
     return result;
@@ -90,7 +113,11 @@ bool writeFloat(const char* ns, const char* key, float value) {
 float readFloat(const char* ns, const char* key, float def) {
     float result = def;
     withPreferences(ns, true, [&](Preferences &p) {
-        result = p.getFloat(key, def);
+        if (p.isKey(key)) {
+            result = p.getFloat(key, def);
+        } else {
+            result = def;
+        }
         return true;
     });
     return result;
@@ -106,7 +133,11 @@ bool writeBytes(const char* ns, const char* key, const void* data, size_t len) {
 size_t bytesLength(const char* ns, const char* key) {
     size_t len = 0;
     withPreferences(ns, true, [&](Preferences &p) {
-        len = p.getBytesLength(key);
+        if (p.isKey(key)) {
+            len = p.getBytesLength(key);
+        } else {
+            len = 0;
+        }
         return true;
     });
     return len;
@@ -114,6 +145,9 @@ size_t bytesLength(const char* ns, const char* key) {
 
 bool readBytes(const char* ns, const char* key, void* outBuf, size_t len) {
     return withPreferences(ns, true, [&](Preferences &p) {
+        if (!p.isKey(key)) {
+            return false;
+        }
         size_t have = p.getBytesLength(key);
         if (have != len) {
             return false;
