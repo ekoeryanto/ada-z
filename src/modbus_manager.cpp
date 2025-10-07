@@ -18,7 +18,11 @@ namespace {
 constexpr uint32_t DEFAULT_MODBUS_BAUD = 9600;
 uint32_t currentModbusBaud = DEFAULT_MODBUS_BAUD;
 constexpr unsigned long POLL_INTERVAL_MS = 1000;
-constexpr uint8_t MAX_MODBUS_REG_FRAME = ModbusMaster::ku8MaxBufferSize;
+#if defined(ARDUINO_ARCH_ESP32)
+constexpr uint8_t MAX_MODBUS_REG_FRAME = 64; // ModbusMaster internal buffer
+#else
+constexpr uint8_t MAX_MODBUS_REG_FRAME = 64;
+#endif
 
 HardwareSerial &rs485 = Serial2;
 ModbusMaster modbusNode;
