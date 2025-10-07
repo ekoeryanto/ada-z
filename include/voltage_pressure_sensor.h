@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // Function to convert ADC value to voltage
-float convert010V(int adc);
+float convert010V(int adc, int channelIndex = 0);
 void setVoltageLinearCalibration(float scale, float offset);
 void getVoltageLinearCalibration(float &scale, float &offset);
 
@@ -46,6 +46,11 @@ bool isPinSaturated(int pinIndex);
 // Runtime-configurable ADC smoothing parameters
 int getAdcNumSamples();
 void setAdcNumSamples(int n);
+
+// Divider scale helpers
+float getAdcDividerScale(int index);
+void setAdcDividerScale(int index, float scale);
+const float* getAllAdcDividerScales();
 
 
 #endif // VOLTAGE_PRESSURE_SENSOR_H

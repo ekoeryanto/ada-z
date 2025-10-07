@@ -395,7 +395,7 @@ function startSensorsStream() {
 onMounted(async () => {
   await refreshData();
   startSensorsStream();
-  scheduleAutoRefresh();
+  // scheduleAutoRefresh();
 });
 
 onBeforeUnmount(() => {

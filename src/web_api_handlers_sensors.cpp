@@ -18,6 +18,7 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncJson.h>
 #include <math.h>
+#include <cstring>
 
 // Need AsyncEventSource for SSE
 #include <AsyncEventSource.h>
@@ -296,6 +297,12 @@ void registerSensorHandlers(AsyncWebServer *server) {
         getVoltageLinearCalibration(scale, offset);
         doc["linear_scale"] = scale;
         doc["linear_offset"] = offset;
+        JsonArray dividerArr = doc["divider_scale"].to<JsonArray>();
+        const float *dividers = getAllAdcDividerScales();
+        int num = getNumVoltageSensors();
+        for (int i = 0; i < num; ++i) {
+            dividerArr.add(dividers[i]);
+        }
         sendCorsJsonDoc(request, 200, doc);
     });
 
@@ -352,9 +359,40 @@ void registerSensorHandlers(AsyncWebServer *server) {
         if (linearChanged) {
             changed = true;
         }
+        if (!doc["divider_scale"].isNull()) {
+            if (doc["divider_scale"].is<JsonArray>()) {
+                JsonArray arr = doc["divider_scale"].as<JsonArray>();
+                int num = min((int)arr.size(), getNumVoltageSensors());
+                for (int i = 0; i < num; ++i) {
+                    float sc = arr[i].is<float>() ? arr[i].as<float>() : (float)arr[i].as<double>();
+                    if (isfinite(sc) && sc > 0.0f) {
+                        setAdcDividerScale(i, sc);
+                        changed = true;
+                    }
+                }
+            } else if (doc["divider_scale"].is<JsonObject>()) {
+                JsonObject obj = doc["divider_scale"].as<JsonObject>();
+                JsonObject::iterator it = obj.begin();
+                while (it != obj.end()) {
+                    const char *key = it->key().c_str();
+                    if (key && strncmp(key, "ai", 2) == 0) {
+                        int idx = atoi(key + 2);
+                        if (idx >= 0 && idx < getNumVoltageSensors()) {
+                            float sc = it->value().is<float>() ? it->value().as<float>() : (float)it->value().as<double>();
+                            if (isfinite(sc) && sc > 0.0f) {
+                                setAdcDividerScale(idx, sc);
+                                changed = true;
+                            }
+                        }
+                    }
+                    ++it;
+                }
+            }
+        }
         if (changed) {
             auto resp = makeSuccessDoc("ADC config updated");
             sendCorsJsonDoc(request, 200, resp);
+            flagSensorsSnapshotUpdate();
         } else {
             auto resp = makeErrorDoc("No supported keys provided");
             sendCorsJsonDoc(request, 400, resp);

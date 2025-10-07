@@ -30,14 +30,40 @@ static int adcNumSamples = 3; // default
 // Linear correction applied after baseline 0..10 V mapping
 static float voltageLinearScale = 1.0f;
 static float voltageLinearOffset = 0.0f;
+static float adcDividerScale[NUM_VOLTAGE_SENSORS] = {7.6667f, 7.6667f, 7.6667f};
+static const float DEFAULT_ADC_DIVIDER_SCALE[NUM_VOLTAGE_SENSORS] = {7.6667f, 7.6667f, 7.6667f};
+static const char* const ADC_DIVIDER_SCALE_KEYS[NUM_VOLTAGE_SENSORS] = {
+    "div_scale0",
+    "div_scale1",
+    "div_scale2"
+};
 
-float convert010V(int adc) {
+static void loadDividerScalesFromNvs() {
+    for (int i = 0; i < NUM_VOLTAGE_SENSORS; ++i) {
+        float stored = loadFloatFromNVSns("adc_cfg", ADC_DIVIDER_SCALE_KEYS[i], DEFAULT_ADC_DIVIDER_SCALE[i]);
+        if (!isfinite(stored) || stored <= 0.0f) {
+            stored = DEFAULT_ADC_DIVIDER_SCALE[i];
+        }
+        adcDividerScale[i] = stored;
+    }
+}
+
+float convert010V(int adc, int channelIndex) {
     if (adc < 0) adc = 0;
     if (adc > 4095) adc = 4095;
 
-    constexpr float ADC_MAX_COUNT = 4095.0f;
-    float normalized = (float)adc / ADC_MAX_COUNT;
-    float voltage_v = normalized * 10.0f;
+    if (channelIndex < 0 || channelIndex >= NUM_VOLTAGE_SENSORS) {
+        channelIndex = 0;
+    }
+
+    float scale = adcDividerScale[channelIndex];
+    if (!isfinite(scale) || scale <= 0.0f) {
+        scale = DEFAULT_ADC_DIVIDER_SCALE[channelIndex];
+    }
+
+    int mv = adcRawToMv(adc);
+    float adcVoltage = (float)mv / 1000.0f;
+    float voltage_v = adcVoltage * scale;
 
     float corrected_v = voltage_v * voltageLinearScale + voltageLinearOffset;
 
@@ -75,15 +101,15 @@ float getSmoothedVoltagePressure(int pinIndex) {
     }
 
     // 1. Get the current voltage reading using the complex conversion.
-    float currentVoltage = convert010V((int)smoothedADC[pinIndex]);
+    float currentVoltage = convert010V((int)smoothedADC[pinIndex], pinIndex);
 
     // 2. Get the calibration data for the sensor.
     SensorCalibration cal = voltageSensorCalibrations[pinIndex];
 
     // 3. At calibration time, the raw ADC values for zero and span pressures were stored.
     //    Let's find out what the corrected voltage was at those calibration points.
-    float voltageAtZeroPoint = convert010V((int)cal.zeroRawAdc);
-    float voltageAtSpanPoint = convert010V((int)cal.spanRawAdc);
+    float voltageAtZeroPoint = convert010V((int)cal.zeroRawAdc, pinIndex);
+    float voltageAtSpanPoint = convert010V((int)cal.spanRawAdc, pinIndex);
 
     // 4. Now, map the `currentVoltage` from the measured voltage range [voltageAtZeroPoint, voltageAtSpanPoint]
     //    to the desired pressure range [cal.zeroPressureValue, cal.spanPressureValue].
@@ -201,6 +227,7 @@ void loadVoltagePressureCalibration() {
 void setupVoltagePressureSensor() {
     // Initialize sensor module: load per-pin calibration and reset buffers
     loadVoltagePressureCalibration(); // Load calibration on startup
+    loadDividerScalesFromNvs();
 
     // Seed smoothed ADCs using vendor-style averaging to match sample code
     // Read persisted value if present
@@ -309,6 +336,22 @@ void updateVoltagePressureSensor(int pinIndex) {
 bool isPinSaturated(int pinIndex) {
     if (pinIndex < 0 || pinIndex >= NUM_VOLTAGE_SENSORS) return false;
     return consecutiveSaturations[pinIndex] >= 3;
+}
+
+float getAdcDividerScale(int index) {
+    if (index < 0 || index >= NUM_VOLTAGE_SENSORS) return DEFAULT_ADC_DIVIDER_SCALE[0];
+    return adcDividerScale[index];
+}
+
+void setAdcDividerScale(int index, float scale) {
+    if (index < 0 || index >= NUM_VOLTAGE_SENSORS) return;
+    if (!isfinite(scale) || scale <= 0.0f) return;
+    adcDividerScale[index] = scale;
+    saveFloatToNVSns("adc_cfg", ADC_DIVIDER_SCALE_KEYS[index], scale);
+}
+
+const float* getAllAdcDividerScales() {
+    return adcDividerScale;
 }
 
 // (Legacy wrappers removed) Use indexed APIs instead

@@ -55,7 +55,7 @@ static int configuredNumSensors = 0;
 // Sensor EMA filter
 
 // --- Function Prototypes ---
-float convert010V(int adc);
+float convert010V(int adc, int channelIndex);
 
 
 

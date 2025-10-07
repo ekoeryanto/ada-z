@@ -92,8 +92,8 @@ void buildSensorsReadingsJson(JsonDocument &doc) {
         bool saturated = isPinSaturated(i);
         if (raw == 4095 && !saturated) raw = (int)round(smoothed);
 
-        float voltageRaw = convert010V(raw);
-        float voltageFiltered = convert010V(round(smoothed));
+        float voltageRaw = convert010V(raw, i);
+        float voltageFiltered = convert010V(round(smoothed), i);
         SensorCalibration cal = getCalibrationForPin(i);
         float pressureRaw = (raw * cal.scale) + cal.offset;
         float pressureFiltered = (round(smoothed) * cal.scale) + cal.offset;
