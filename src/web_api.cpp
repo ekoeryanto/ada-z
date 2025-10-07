@@ -29,6 +29,7 @@
 #include <esp_heap_caps.h>
 #include <ESPmDNS.h>
 #include <map>
+#include <algorithm>
 #include <vector>
 #include <math.h>
 #include <pgmspace.h>
@@ -1392,13 +1393,9 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Invalid path");
             return;
         }
-        if (!SD.exists(path.c_str())) {
-            sendJsonError(request, 404, "Path not found");
-            return;
-        }
         File dir = SD.open(path.c_str());
         if (!dir) {
-            sendJsonError(request, 500, "Failed to open path");
+            sendJsonError(request, 404, "Path not found");
             return;
         }
         if (!dir.isDirectory()) {
@@ -1406,6 +1403,65 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Not a directory");
             return;
         }
+        dir.rewindDirectory();
+
+        struct SdListItem {
+            String displayName;
+            String fullPath;
+            bool isDir;
+            uint32_t size;
+        };
+
+        std::vector<SdListItem> items;
+        File entry = dir.openNextFile();
+        while (entry) {
+            String rawName = String(entry.name());
+            if (rawName.length() == 0) {
+                entry.close();
+                entry = dir.openNextFile();
+                delay(0);
+                continue;
+            }
+            if (rawName.endsWith("/")) {
+                rawName.remove(rawName.length() - 1);
+            }
+            String fullPath;
+            if (rawName.startsWith("/")) {
+                fullPath = sanitizeSdPath(rawName);
+            } else {
+                fullPath = sanitizeSdPath(joinSdPath(path, rawName));
+            }
+            if (fullPath.length() == 0) {
+                entry.close();
+                entry = dir.openNextFile();
+                delay(0);
+                continue;
+            }
+            String displayName = rawName;
+            int slashIdx = displayName.lastIndexOf('/');
+            if (slashIdx >= 0) {
+                displayName = displayName.substring(slashIdx + 1);
+            }
+            if (displayName.length() == 0) {
+                displayName = rawName;
+            }
+            SdListItem item;
+            item.displayName = displayName;
+            item.fullPath = fullPath;
+            item.isDir = entry.isDirectory();
+            item.size = item.isDir ? 0U : (uint32_t)entry.size();
+            items.push_back(item);
+            entry.close();
+            entry = dir.openNextFile();
+            delay(0);
+        }
+        dir.close();
+
+        std::sort(items.begin(), items.end(), [](const SdListItem &a, const SdListItem &b) {
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            return a.displayName.compareTo(b.displayName) < 0;
+        });
+
         JsonDocument doc;
         doc["path"] = path;
         doc["parent"] = parentSdPath(path);
@@ -1418,44 +1474,14 @@ void setupWebServer(int port /*= 80*/) {
         doc["used_bytes"] = usedBytes;
         doc["free_bytes"] = freeBytes;
 #endif
-        JsonArray entries = doc["entries"].to<JsonArray>();
-        File entry = dir.openNextFile();
-        while (entry) {
-            JsonObject item = entries.add<JsonObject>();
-            String rawName = String(entry.name());
-            if (rawName.length() == 0) rawName = "(unknown)";
-            String displayName = rawName;
-            int slashIdx = displayName.lastIndexOf('/');
-            if (slashIdx >= 0) {
-                displayName = displayName.substring(slashIdx + 1);
-            }
-            if (displayName.length() == 0) displayName = rawName;
-            String childPath;
-            if (rawName.startsWith("/")) {
-                childPath = rawName;
-            } else {
-                childPath = joinSdPath(path, rawName);
-            }
-            childPath = sanitizeSdPath(childPath);
-            if (childPath.length() == 0) {
-                childPath = joinSdPath(path, displayName);
-                childPath = sanitizeSdPath(childPath);
-            }
-            if (childPath.length() == 0) {
-                entry.close();
-                entry = dir.openNextFile();
-                delay(0);
-                continue;
-            }
-            item["name"] = displayName;
-            item["path"] = childPath;
-            item["is_dir"] = entry.isDirectory() ? 1 : 0;
-            item["size"] = entry.isDirectory() ? (uint32_t)0 : (uint32_t)entry.size();
-            entry.close();
-            entry = dir.openNextFile();
-            delay(0);
+        JsonArray arr = doc["entries"].to<JsonArray>();
+        for (const auto &it : items) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["name"] = it.displayName;
+            obj["path"] = it.fullPath;
+            obj["is_dir"] = it.isDir ? 1 : 0;
+            obj["size"] = it.size;
         }
-        dir.close();
         sendCorsJsonDoc(request, 200, doc);
     });
 
