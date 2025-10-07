@@ -5,8 +5,9 @@ async function request(path, { method = 'GET', headers = {}, body, timeoutMs = 8
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
     const finalHeaders = { ...headers };
-    if (body && !finalHeaders['Content-Type']) {
+    if (body && !isFormData && !finalHeaders['Content-Type']) {
       finalHeaders['Content-Type'] = 'application/json';
     }
 
@@ -151,4 +152,40 @@ export function autoCalibrateAds(payload) {
 
 export function openSensorsEventSource() {
   return new EventSource(`${API_BASE}/sse/sensors`);
+}
+
+export function listSdFiles(path = '/') {
+  const query = encodeURIComponent(path);
+  return request(`/sd/files?path=${query}`);
+}
+
+export function deleteSdEntry(path) {
+  const query = encodeURIComponent(path);
+  return request(`/sd/file?path=${query}`, { method: 'DELETE' });
+}
+
+export function createSdDirectory(parentPath, name) {
+  return request('/sd/mkdir', {
+    method: 'POST',
+    body: JSON.stringify({ path: parentPath, name }),
+  });
+}
+
+export function uploadSdFile(targetDir, file, { timeoutMs = 30000 } = {}) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const query = encodeURIComponent(targetDir);
+  return request(`/sd/upload?dir=${query}`, {
+    method: 'POST',
+    body: formData,
+    timeoutMs,
+  });
+}
+
+export function buildSdFileUrl(path, { download = true } = {}) {
+  const params = new URLSearchParams({
+    path,
+    download: download ? '1' : '0',
+  });
+  return `${API_BASE}/sd/file?${params.toString()}`;
 }

@@ -68,6 +68,80 @@ void loadConfig() {
 
 static const size_t CONFIG_DOC_CAP = 8192;
 
+namespace {
+
+String sanitizeSdPath(const String &input) {
+    String path = input;
+    // Normalize whitespace and separators
+    path.trim();
+    if (path.length() == 0) path = "/";
+    // Replace backslashes with forward slashes to avoid confusion
+    path.replace('\\', '/');
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+    // Collapse duplicate slashes
+    while (path.indexOf("//") >= 0) {
+        path.replace("//", "/");
+    }
+    // Remove trailing slash (keep root "/")
+    while (path.endsWith("/") && path.length() > 1) {
+        path.remove(path.length() - 1);
+    }
+    // Reject paths containing navigation segments or illegal characters
+    int len = path.length();
+    int i = 0;
+    while (i < len) {
+        while (i < len && path.charAt(i) == '/') i++;
+        if (i >= len) break;
+        int j = i;
+        while (j < len && path.charAt(j) != '/') j++;
+        int segLen = j - i;
+        if (segLen == 1 && path.charAt(i) == '.') return String();
+        if (segLen == 2 && path.charAt(i) == '.' && path.charAt(i + 1) == '.') return String();
+        for (int k = i; k < j; ++k) {
+            char c = path.charAt(k);
+            if (c == ':' || c == '*' || c == '?' || c == '\"') return String();
+        }
+        i = j;
+    }
+    return path;
+}
+
+bool isValidSdName(const String &name) {
+    if (name.length() == 0) return false;
+    if (name == "." || name == "..") return false;
+    for (size_t i = 0; i < name.length(); ++i) {
+        char c = name.charAt(i);
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '\"') return false;
+        if (static_cast<unsigned char>(c) < 0x20) return false;
+    }
+    return true;
+}
+
+String joinSdPath(const String &dir, const String &name) {
+    if (dir == "/") return "/" + name;
+    if (dir.endsWith("/")) return dir + name;
+    return dir + "/" + name;
+}
+
+String parentSdPath(const String &path) {
+    if (path.length() <= 1) return "/";
+    int last = path.lastIndexOf('/');
+    if (last <= 0) return "/";
+    return path.substring(0, last);
+}
+
+struct SdUploadContext {
+    String destPath;
+    bool fileOpened = false;
+    bool success = false;
+    String error;
+    int statusCode = 200;
+};
+
+} // namespace
+
 
 static void populateUnifiedConfig(JsonDocument &doc) {
     doc.clear();
@@ -1306,6 +1380,343 @@ void setupWebServer(int port /*= 80*/) {
 
         }
     });
+
+    server->on("/api/sd/files", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        String rawPath = request->hasParam("path") ? request->getParam("path")->value() : "/";
+        String path = sanitizeSdPath(rawPath);
+        if (path.length() == 0) {
+            sendJsonError(request, 400, "Invalid path");
+            return;
+        }
+        if (!SD.exists(path.c_str())) {
+            sendJsonError(request, 404, "Path not found");
+            return;
+        }
+        File dir = SD.open(path.c_str());
+        if (!dir) {
+            sendJsonError(request, 500, "Failed to open path");
+            return;
+        }
+        if (!dir.isDirectory()) {
+            dir.close();
+            sendJsonError(request, 400, "Not a directory");
+            return;
+        }
+        JsonDocument doc;
+        doc["path"] = path;
+        doc["parent"] = parentSdPath(path);
+        doc["sd_ready"] = sdReady ? 1 : 0;
+#if defined(ESP32)
+        uint64_t totalBytes = SD.cardSize();
+        uint64_t usedBytes = SD.usedBytes();
+        uint64_t freeBytes = (totalBytes > usedBytes) ? (totalBytes - usedBytes) : 0;
+        doc["total_bytes"] = totalBytes;
+        doc["used_bytes"] = usedBytes;
+        doc["free_bytes"] = freeBytes;
+#endif
+        JsonArray entries = doc["entries"].to<JsonArray>();
+        File entry = dir.openNextFile();
+        while (entry) {
+            JsonObject item = entries.add<JsonObject>();
+            String rawName = String(entry.name());
+            if (rawName.length() == 0) rawName = "(unknown)";
+            String displayName = rawName;
+            int slashIdx = displayName.lastIndexOf('/');
+            if (slashIdx >= 0) {
+                displayName = displayName.substring(slashIdx + 1);
+            }
+            if (displayName.length() == 0) displayName = rawName;
+            String childPath;
+            if (rawName.startsWith("/")) {
+                childPath = rawName;
+            } else {
+                childPath = joinSdPath(path, rawName);
+            }
+            childPath = sanitizeSdPath(childPath);
+            if (childPath.length() == 0) {
+                childPath = joinSdPath(path, displayName);
+                childPath = sanitizeSdPath(childPath);
+            }
+            if (childPath.length() == 0) {
+                entry.close();
+                entry = dir.openNextFile();
+                delay(0);
+                continue;
+            }
+            item["name"] = displayName;
+            item["path"] = childPath;
+            item["is_dir"] = entry.isDirectory() ? 1 : 0;
+            item["size"] = entry.isDirectory() ? (uint32_t)0 : (uint32_t)entry.size();
+            entry.close();
+            entry = dir.openNextFile();
+            delay(0);
+        }
+        dir.close();
+        sendCorsJsonDoc(request, 200, doc);
+    });
+
+    server->on("/api/sd/file", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        if (!request->hasParam("path")) {
+            sendJsonError(request, 400, "Missing path");
+            return;
+        }
+        String path = sanitizeSdPath(request->getParam("path")->value());
+        if (path.length() == 0) {
+            sendJsonError(request, 400, "Invalid path");
+            return;
+        }
+        if (!SD.exists(path.c_str())) {
+            sendJsonError(request, 404, "File not found");
+            return;
+        }
+        File f = SD.open(path.c_str(), FILE_READ);
+        if (!f) {
+            sendJsonError(request, 500, "Failed to open file");
+            return;
+        }
+        if (f.isDirectory()) {
+            f.close();
+            sendJsonError(request, 400, "Path is a directory");
+            return;
+        }
+        f.close();
+        const char* ct = contentTypeFromPath(path);
+        AsyncWebServerResponse *response = request->beginResponse(SD, path, ct);
+        bool forceDownload = true;
+        if (request->hasParam("download")) {
+            forceDownload = request->getParam("download")->value().toInt() != 0;
+        }
+        if (forceDownload) {
+            int lastSlash = path.lastIndexOf('/');
+            String filename = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+            response->addHeader("Content-Disposition", String("attachment; filename=\"") + filename + "\"");
+        }
+        setCorsHeaders(response);
+        request->send(response);
+    });
+
+    server->on("/api/sd/file", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        if (!request->hasParam("path")) {
+            sendJsonError(request, 400, "Missing path");
+            return;
+        }
+        String path = sanitizeSdPath(request->getParam("path")->value());
+        if (path.length() == 0 || path == "/") {
+            sendJsonError(request, 400, "Invalid path");
+            return;
+        }
+        if (!SD.exists(path.c_str())) {
+            sendJsonError(request, 404, "Path not found");
+            return;
+        }
+        File entry = SD.open(path.c_str());
+        if (!entry) {
+            sendJsonError(request, 500, "Failed to open path");
+            return;
+        }
+        bool isDir = entry.isDirectory();
+        entry.close();
+        bool ok = false;
+        if (isDir) {
+            ok = removeDirRecursive(path);
+        } else {
+            ok = SD.remove(path.c_str());
+        }
+        if (!ok) {
+            sendJsonError(request, 500, "Failed to remove entry");
+            return;
+        }
+        sendJsonSuccess(request, 200, isDir ? "Directory removed" : "File removed");
+    });
+
+    AsyncCallbackJsonWebHandler* sdMkdirHandler = new AsyncCallbackJsonWebHandler("/api/sd/mkdir", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        if (!json.is<JsonObject>()) {
+            sendJsonError(request, 400, "Invalid JSON");
+            return;
+        }
+        JsonObject obj = json.as<JsonObject>();
+        String parent = obj["path"].is<String>() ? obj["path"].as<String>() : "/";
+        String name = obj["name"].is<String>() ? obj["name"].as<String>() : "";
+        String parentPath = sanitizeSdPath(parent);
+        if (parentPath.length() == 0) {
+            sendJsonError(request, 400, "Invalid parent path");
+            return;
+        }
+        if (!isValidSdName(name)) {
+            sendJsonError(request, 400, "Invalid directory name");
+            return;
+        }
+        if (!SD.exists(parentPath.c_str())) {
+            sendJsonError(request, 404, "Parent directory not found");
+            return;
+        }
+        File parentDir = SD.open(parentPath.c_str());
+        if (!parentDir) {
+            sendJsonError(request, 500, "Failed to open parent directory");
+            return;
+        }
+        bool isDir = parentDir.isDirectory();
+        parentDir.close();
+        if (!isDir) {
+            sendJsonError(request, 400, "Parent path is not a directory");
+            return;
+        }
+        String newPath = sanitizeSdPath(joinSdPath(parentPath, name));
+        if (newPath.length() == 0) {
+            sendJsonError(request, 400, "Failed to resolve directory path");
+            return;
+        }
+        if (SD.exists(newPath.c_str())) {
+            sendJsonError(request, 409, "Entry already exists");
+            return;
+        }
+        if (!SD.mkdir(newPath.c_str())) {
+            sendJsonError(request, 500, "Failed to create directory");
+            return;
+        }
+        JsonDocument doc;
+        setStatusMessage(doc, "success", "Directory created");
+        doc["path"] = newPath;
+        sendCorsJsonDoc(request, 200, doc);
+    });
+    sdMkdirHandler->setMaxContentLength(512);
+    server->addHandler(sdMkdirHandler);
+
+    server->on(
+        "/api/sd/upload", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            SdUploadContext *ctx = reinterpret_cast<SdUploadContext*>(request->_tempObject);
+            JsonDocument doc;
+            if (!ctx) {
+                setStatusMessage(doc, "error", "Upload context missing");
+                sendCorsJsonDoc(request, 500, doc);
+                return;
+            }
+            bool success = ctx->error.length() == 0 && ctx->success;
+            if (!success && ctx->destPath.length() > 0 && SD.exists(ctx->destPath.c_str())) {
+                SD.remove(ctx->destPath.c_str());
+            }
+            if (success) {
+                setStatusMessage(doc, "success", "Upload complete");
+                doc["path"] = ctx->destPath;
+            } else {
+                setStatusMessage(doc, "error", ctx->error.length() ? ctx->error : String("Upload failed"));
+            }
+            int code = success ? 200 : ctx->statusCode;
+            sendCorsJsonDoc(request, code, doc);
+            delete ctx;
+            request->_tempObject = nullptr;
+        },
+        [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            SdUploadContext *ctx = reinterpret_cast<SdUploadContext*>(request->_tempObject);
+            if (index == 0) {
+                if (ctx) {
+                    delete ctx;
+                    ctx = nullptr;
+                }
+                ctx = new SdUploadContext();
+                request->_tempObject = ctx;
+                if (!sdReady) {
+                    ctx->error = "SD card not ready";
+                    ctx->statusCode = 503;
+                    return;
+                }
+                if (!isValidSdName(filename)) {
+                    ctx->error = "Invalid file name";
+                    ctx->statusCode = 400;
+                    return;
+                }
+                String dirParam = "/";
+                if (request->hasParam("dir")) {
+                    dirParam = request->getParam("dir")->value();
+                }
+                String targetDir = sanitizeSdPath(dirParam);
+                if (targetDir.length() == 0) {
+                    ctx->error = "Invalid target directory";
+                    ctx->statusCode = 400;
+                    return;
+                }
+                if (!SD.exists(targetDir.c_str())) {
+                    ctx->error = "Target directory not found";
+                    ctx->statusCode = 404;
+                    return;
+                }
+                File dirFile = SD.open(targetDir.c_str());
+                if (!dirFile) {
+                    ctx->error = "Failed to open target directory";
+                    ctx->statusCode = 500;
+                    return;
+                }
+                bool dirOk = dirFile.isDirectory();
+                dirFile.close();
+                if (!dirOk) {
+                    ctx->error = "Target path is not a directory";
+                    ctx->statusCode = 400;
+                    return;
+                }
+                ctx->destPath = sanitizeSdPath(joinSdPath(targetDir, filename));
+                if (ctx->destPath.length() == 0) {
+                    ctx->error = "Failed to resolve destination path";
+                    ctx->statusCode = 400;
+                    return;
+                }
+                if (SD.exists(ctx->destPath.c_str())) {
+                    SD.remove(ctx->destPath.c_str());
+                }
+                request->_tempFile = SD.open(ctx->destPath.c_str(), FILE_WRITE);
+                if (!request->_tempFile) {
+                    ctx->error = "Failed to open destination file";
+                    ctx->statusCode = 500;
+                    return;
+                }
+                ctx->fileOpened = true;
+            }
+            ctx = reinterpret_cast<SdUploadContext*>(request->_tempObject);
+            if (!ctx) return;
+            if (ctx->error.length() > 0) {
+                if (final && request->_tempFile) {
+                    request->_tempFile.close();
+                }
+                return;
+            }
+            if (len && request->_tempFile) {
+                size_t written = request->_tempFile.write(data, len);
+                if (written != len) {
+                    ctx->error = "Write error";
+                    ctx->statusCode = 500;
+                    request->_tempFile.close();
+                    ctx->fileOpened = false;
+                    return;
+                }
+                delay(0);
+            }
+            if (final) {
+                if (request->_tempFile) {
+                    request->_tempFile.close();
+                    ctx->fileOpened = false;
+                }
+                if (ctx->error.length() == 0) {
+                    ctx->success = true;
+                }
+            }
+        }
+    );
 
     // ADS auto-calibration: compute and persist tp_scale (mV per mA) so TP5551-derived voltage maps to target pressure
     AsyncCallbackJsonWebHandler* adsAutoCalHandler = new AsyncCallbackJsonWebHandler("/api/ads/calibrate/auto", [](AsyncWebServerRequest *request, JsonVariant &json) {

@@ -22,6 +22,11 @@ const routes = [
     component: () => import('../views/ModbusPollView.vue'),
   },
   {
+    path: '/sd',
+    name: 'sd',
+    component: () => import('../views/SdCardView.vue'),
+  },
+  {
     path: '/notifications',
     name: 'notifications',
     component: () => import('../views/NotificationsView.vue'),
