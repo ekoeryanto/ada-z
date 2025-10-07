@@ -1444,40 +1444,71 @@ void setupWebServer(int port /*= 80*/) {
         doc["used_bytes"] = usedBytes;
         doc["free_bytes"] = freeBytes;
 #endif
-        JsonArray arr = doc.createNestedArray("entries");
         struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
         std::vector<EntryTemp> temp;
-        for (File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+        bool haveRaw = false;
+        while (true) {
+            File entry = dir.openNextFile();
+            if (!entry) break;
+            String fullPath = String(entry.path());
             String rawName = String(entry.name());
-            if (rawName.length() == 0) {
+            if (fullPath.length() == 0) {
+                fullPath = rawName.startsWith("/") ? rawName : joinSdPath(path, rawName);
+            }
+            if (fullPath.length() == 0) {
                 entry.close();
                 delay(0);
                 continue;
             }
-            if (rawName.endsWith("/")) rawName.remove(rawName.length() - 1);
-            String combined = rawName.startsWith("/") ? rawName : joinSdPath(path, rawName);
-            String childPath = sanitizeSdPath(combined);
-            if (childPath.length() == 0) {
-                childPath = combined;
-            }
-            if (!childPath.startsWith("/")) {
-                childPath = "/" + childPath;
-            }
-            if (childPath.length() == 0) {
-                entry.close();
-                delay(0);
-                continue;
-            }
-            String displayName = rawName;
+            if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
+            String childPath = sanitizeSdPath(fullPath);
+            if (childPath.length() == 0) childPath = fullPath;
+            String displayName = String(entry.name());
+            if (displayName.endsWith("/")) displayName.remove(displayName.length() - 1);
             int idx = displayName.lastIndexOf('/');
             if (idx >= 0) displayName = displayName.substring(idx + 1);
-            if (displayName.length() == 0) displayName = rawName;
+            if (displayName.length() == 0) displayName = childPath;
             EntryTemp info { displayName, childPath, entry.isDirectory(), entry.isDirectory() ? 0U : (uint32_t)entry.size() };
             temp.push_back(info);
+            haveRaw = true;
             entry.close();
             delay(0);
         }
         dir.close();
+
+        if (temp.empty()) {
+            static const char* FALLBACK_PATHS[] = {
+                "/modbus.json",
+                "/tags.json",
+                "/pending_notifications.jsonl",
+                "/error.log",
+                "/www",
+                "/www.old",
+                "/config",
+                "/data",
+                "/logs"
+            };
+            for (const char* candidate : FALLBACK_PATHS) {
+                if (!candidate) continue;
+                if (!SD.exists(candidate)) continue;
+                File f = SD.open(candidate);
+                if (!f) continue;
+                EntryTemp info;
+                String display = String(candidate);
+                if (display.endsWith("/")) display.remove(display.length() - 1);
+                int idx = display.lastIndexOf('/');
+                if (idx >= 0) display = display.substring(idx + 1);
+                info.name = display.length() ? display : String(candidate);
+                info.path = String(candidate);
+                info.isDir = f.isDirectory();
+                info.size = info.isDir ? 0U : (uint32_t)f.size();
+                temp.push_back(info);
+                f.close();
+            }
+            if (!temp.empty()) {
+                doc["fallback_used"] = 1;
+            }
+        }
 
         std::sort(temp.begin(), temp.end(), [](const EntryTemp &a, const EntryTemp &b) {
             if (a.isDir != b.isDir) return a.isDir && !b.isDir;
@@ -1485,6 +1516,7 @@ void setupWebServer(int port /*= 80*/) {
         });
 
         doc["entries_count"] = (uint32_t)temp.size();
+        JsonArray arr = doc["entries"].to<JsonArray>();
         for (const auto &it : temp) {
             JsonObject obj = arr.add<JsonObject>();
             obj["name"] = it.name;
@@ -1492,6 +1524,7 @@ void setupWebServer(int port /*= 80*/) {
             obj["is_dir"] = it.isDir ? 1 : 0;
             obj["size"] = it.size;
         }
+        doc["raw_iterated"] = haveRaw ? 1 : 0;
         sendCorsJsonDoc(request, 200, doc);
     });
 
