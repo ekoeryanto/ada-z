@@ -14,7 +14,6 @@
 #include "voltage_pressure_sensor.h"
 #include "calibration_keys.h"
 #include "sensor_calibration_types.h"
-#include "SdFat.h"
 #include "wifi_manager_module.h"
 #include "modbus_manager.h"
 #include <ArduinoJson.h>
@@ -1441,46 +1440,15 @@ void setupWebServer(int port /*= 80*/) {
         struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
         std::vector<EntryTemp> temp;
         
-        // Use SdFat library for reliable directory listing
-        static SdFat32 sdFat;
-        static bool sdFatInitialized = false;
-        
-        if (!sdFatInitialized) {
-            // Initialize SdFat with same SPI pins as ESP32 SD library
-            if (sdFat.begin(SS)) {
-                sdFatInitialized = true;
-                Serial.println("[SD] SdFat initialized successfully");
-            } else {
-                Serial.println("[SD] SdFat initialization failed, falling back to basic SD");
-            }
-        }
-        
-        if (sdFatInitialized) {
-            // Use SdFat for proper directory listing
-            File32 dir;
-            if (dir.open(path.c_str()) && dir.isDirectory()) {
-                File32 entry;
-                while (entry.openNext(&dir, O_RDONLY)) {
-                    char fileName[256];
-                    entry.getName(fileName, sizeof(fileName));
-                    
-                    // Skip hidden files
-                    if (fileName[0] != '.') {
-                        String displayName = String(fileName);
-                        String fullPath = joinSdPath(path, displayName);
-                        bool isDir = entry.isDirectory();
-                        uint32_t size = isDir ? 0 : (uint32_t)entry.size();
-                        
-                        EntryTemp info { displayName, fullPath, isDir, size };
-                        temp.push_back(info);
-                    }
-                    entry.close();
-                }
-                dir.close();
-            }
-        } else {
-            // Fallback to basic SD library with known paths
-            if (path == "/") {
+        // Safe fallback directory listing - avoid SdFat due to crashes
+        // Use reliable SD.exists() approach for common paths only
+        {
+            // Check if SD card is actually working before attempting operations
+            if (!SD.cardSize() || SD.cardSize() == 0) {
+                Serial.println("[SD] SD card not accessible, skipping directory listing");
+                // Leave temp empty - will show no entries
+            } else if (path == "/") {
+                // Root directory - check common directories and files safely
                 const char* commonPaths[] = {
                     "/www", "/config", "/data", "/logs", "/backup", "/uploads", "/temp",
                     "/modbus.json", "/tags.json", "/system.json", "/wifi.json", 
@@ -1488,18 +1456,38 @@ void setupWebServer(int port /*= 80*/) {
                 };
                 
                 for (int i = 0; i < 16; i++) {
-                    if (SD.exists(commonPaths[i])) {
-                        File item = SD.open(commonPaths[i]);
-                        if (item) {
-                            String displayName = String(commonPaths[i]).substring(1);
-                            bool isDir = item.isDirectory();
-                            uint32_t size = isDir ? 0 : (uint32_t)item.size();
-                            
-                            EntryTemp info { displayName, String(commonPaths[i]), isDir, size };
-                            temp.push_back(info);
-                            item.close();
+                    try {
+                        if (SD.exists(commonPaths[i])) {
+                            File item = SD.open(commonPaths[i]);
+                            if (item) {
+                                String displayName = String(commonPaths[i]).substring(1);
+                                bool isDir = item.isDirectory();
+                                uint32_t size = isDir ? 0 : (uint32_t)item.size();
+                                
+                                EntryTemp info { displayName, String(commonPaths[i]), isDir, size };
+                                temp.push_back(info);
+                                item.close();
+                            }
                         }
+                    } catch (...) {
+                        // Ignore any SD card errors for individual files
+                        Serial.printf("[SD] Error accessing path: %s\n", commonPaths[i]);
                     }
+                    yield(); // Allow other tasks to run
+                }
+            } else {
+                // Non-root directories - basic existence check only
+                try {
+                    if (SD.exists(path.c_str())) {
+                        File dir = SD.open(path.c_str());
+                        if (dir && dir.isDirectory()) {
+                            // For subdirectories, just return empty for now to avoid crashes
+                            Serial.printf("[SD] Subdirectory %s exists but listing disabled for safety\n", path.c_str());
+                        }
+                        if (dir) dir.close();
+                    }
+                } catch (...) {
+                    Serial.printf("[SD] Error accessing subdirectory: %s\n", path.c_str());
                 }
             }
         }
