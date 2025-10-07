@@ -1448,16 +1448,30 @@ void setupWebServer(int port /*= 80*/) {
         std::vector<EntryTemp> temp;
         bool haveRaw = false;
         
-        // Improved directory listing approach for ESP32 compatibility
-        dir.rewindDirectory();  // Ensure we start from beginning
+        // ESP32 SD Card directory listing with comprehensive debug and multiple approaches
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("[SD] Listing directory: %s\n", path.c_str());
+        #endif
+        
+        dir.rewindDirectory();
+        int entryCount = 0;
+        
+        // Primary method: openNextFile iteration
         while (true) {
             File entry = dir.openNextFile();
             if (!entry) break;
             
+            entryCount++;
             String fullPath = String(entry.path());
             String rawName = String(entry.name());
             
-            // Skip entries with problematic names
+            #if ENABLE_VERBOSE_LOGS
+            Serial.printf("[SD] Entry %d: name='%s', path='%s', isDir=%d, size=%u\n", 
+                         entryCount, rawName.c_str(), fullPath.c_str(), 
+                         entry.isDirectory(), (uint32_t)entry.size());
+            #endif
+            
+            // Skip system entries
             if (rawName.startsWith(".") && (rawName == "." || rawName == "..")) {
                 entry.close();
                 continue;
@@ -1468,7 +1482,6 @@ void setupWebServer(int port /*= 80*/) {
             }
             if (fullPath.length() == 0) {
                 entry.close();
-                delay(0);
                 continue;
             }
             if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
@@ -1483,60 +1496,180 @@ void setupWebServer(int port /*= 80*/) {
             if (idx >= 0) displayName = displayName.substring(idx + 1);
             if (displayName.length() == 0) displayName = childPath;
             
-            // More robust directory detection
+            // Enhanced directory detection with multiple methods
             bool isDir = entry.isDirectory();
-            uint32_t fileSize = 0;
+            uint32_t fileSize = entry.isDirectory() ? 0 : (uint32_t)entry.size();
             
+            // Method 2: Re-open and check if original detection failed
             if (!isDir) {
-                fileSize = (uint32_t)entry.size();
-                // Additional check: if size is 0 and name suggests directory, double-check
-                if (fileSize == 0 || displayName.indexOf('.') == -1) {
-                    File testEntry = SD.open(childPath.c_str());
-                    if (testEntry) {
-                        if (testEntry.isDirectory()) {
-                            isDir = true;
-                            fileSize = 0;
-                        }
-                        testEntry.close();
+                File recheck = SD.open(childPath.c_str());
+                if (recheck) {
+                    bool recheckIsDir = recheck.isDirectory();
+                    recheck.close();
+                    if (recheckIsDir) {
+                        isDir = true;
+                        fileSize = 0;
+                        #if ENABLE_VERBOSE_LOGS
+                        Serial.printf("[SD] Directory detected on recheck: %s\n", childPath.c_str());
+                        #endif
                     }
                 }
+            }
+            
+            // Method 3: Check for directory with trailing slash
+            if (!isDir && !childPath.endsWith("/")) {
+                String dirPath = childPath + "/";
+                File slashCheck = SD.open(dirPath.c_str());
+                if (slashCheck && slashCheck.isDirectory()) {
+                    isDir = true;
+                    fileSize = 0;
+                    slashCheck.close();
+                    #if ENABLE_VERBOSE_LOGS
+                    Serial.printf("[SD] Directory detected with slash: %s\n", dirPath.c_str());
+                    #endif
+                }
+                if (slashCheck) slashCheck.close();
             }
             
             EntryTemp info { displayName, childPath, isDir, fileSize };
             temp.push_back(info);
             haveRaw = true;
             entry.close();
-            yield(); // Better than delay(0) for ESP32
+            yield();
         }
+        
+        #if ENABLE_VERBOSE_LOGS
+        Serial.printf("[SD] Found %d entries via openNextFile\n", entryCount);
+        #endif
         dir.close();
 
-        // Additional fallback: check for common directories that might be missed
+        // Alternative method: Manual directory probing (ESP32 SD library workaround)
+        // This addresses issues where openNextFile() doesn't detect directories properly
         if (path == "/") {
-            static const char* COMMON_DIRS[] = {
-                "/www", "/config", "/data", "/logs", "/backup", "/uploads", "/temp"
+            static const char* PROBE_DIRS[] = {
+                "www", "config", "data", "logs", "backup", "uploads", "temp", "static", "assets", "files"
             };
-            for (const char* dirCandidate : COMMON_DIRS) {
-                if (!dirCandidate) continue;
-                if (!SD.exists(dirCandidate)) continue;
+            #if ENABLE_VERBOSE_LOGS
+            Serial.println("[SD] Probing for common directories...");
+            #endif
+            
+            for (const char* dirName : PROBE_DIRS) {
+                if (!dirName) continue;
+                String dirPath = String("/") + dirName;
                 
-                // Check if already in our list
+                // Check if already found
                 bool alreadyFound = false;
                 for (const auto& existing : temp) {
-                    if (existing.path == String(dirCandidate)) {
+                    if (existing.path == dirPath) {
                         alreadyFound = true;
                         break;
                     }
                 }
                 if (alreadyFound) continue;
                 
-                File f = SD.open(dirCandidate);
+                // Test directory existence multiple ways
+                bool isValidDir = false;
+                File f = SD.open(dirPath.c_str());
+                if (f) {
+                    isValidDir = f.isDirectory();
+                    f.close();
+                    
+                    if (isValidDir) {
+                        EntryTemp info { String(dirName), dirPath, true, 0U };
+                        temp.push_back(info);
+                        #if ENABLE_VERBOSE_LOGS
+                        Serial.printf("[SD] Manually found directory: %s\n", dirPath.c_str());
+                        #endif
+                    }
+                }
+                
+                // Alternative: try with trailing slash
+                if (!isValidDir) {
+                    String slashPath = dirPath + "/";
+                    File slashTest = SD.open(slashPath.c_str());
+                    if (slashTest && slashTest.isDirectory()) {
+                        EntryTemp info { String(dirName), dirPath, true, 0U };
+                        temp.push_back(info);
+                        #if ENABLE_VERBOSE_LOGS
+                        Serial.printf("[SD] Found directory with slash: %s\n", slashPath.c_str());
+                        #endif
+                    }
+                    if (slashTest) slashTest.close();
+                }
+            }
+        }
+        
+        // For non-root paths, try to scan for numbered or common subdirectories
+        else {
+            static const char* COMMON_SUBDIR_PATTERNS[] = {
+                "001", "002", "003", "data", "temp", "backup"
+            };
+            for (const char* pattern : COMMON_SUBDIR_PATTERNS) {
+                if (!pattern) continue;
+                String testPath = path;
+                if (!testPath.endsWith("/")) testPath += "/";
+                testPath += pattern;
+                
+                // Check if already found
+                bool alreadyFound = false;
+                for (const auto& existing : temp) {
+                    if (existing.path == testPath) {
+                        alreadyFound = true;
+                        break;
+                    }
+                }
+                if (alreadyFound) continue;
+                
+                File f = SD.open(testPath.c_str());
                 if (f && f.isDirectory()) {
-                    String display = String(dirCandidate);
-                    if (display.startsWith("/")) display = display.substring(1);
-                    EntryTemp info { display, String(dirCandidate), true, 0U };
+                    EntryTemp info { String(pattern), testPath, true, 0U };
                     temp.push_back(info);
+                    #if ENABLE_VERBOSE_LOGS
+                    Serial.printf("[SD] Found subdirectory: %s\n", testPath.c_str());
+                    #endif
                 }
                 if (f) f.close();
+            }
+        }
+        
+        // Force directory detection: final fallback approach
+        // Some ESP32 SD library versions have serious issues with directory detection
+        // This adds a brute-force approach for the most common directories
+        if (path == "/") {
+            static const char* FORCE_CHECK_DIRS[] = {
+                "www", "config", "data", "logs", "System Volume Information"
+            };
+            
+            for (const char* forceName : FORCE_CHECK_DIRS) {
+                if (!forceName) continue;
+                String forcePath = String("/") + forceName;
+                
+                // Skip if already found
+                bool skip = false;
+                for (const auto& existing : temp) {
+                    if (existing.path == forcePath) {
+                        skip = true;
+                        break;
+                    }
+                }
+                if (skip) continue;
+                
+                // Force check: if path exists but can't be opened as file, assume directory
+                if (SD.exists(forcePath.c_str())) {
+                    File testFile = SD.open(forcePath.c_str(), FILE_READ);
+                    if (!testFile) {
+                        // Can't open - might be directory, add it anyway
+                        EntryTemp info { String(forceName), forcePath, true, 0U };
+                        temp.push_back(info);
+                    } else {
+                        // Can open - check if it's directory or file
+                        if (testFile.isDirectory()) {
+                            EntryTemp info { String(forceName), forcePath, true, 0U };
+                            temp.push_back(info);
+                        }
+                        testFile.close();
+                    }
+                }
             }
         }
 
