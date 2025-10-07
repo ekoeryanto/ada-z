@@ -1409,6 +1409,7 @@ void setupWebServer(int port /*= 80*/) {
         }
     });
 
+    // Alternative SD directory listing that doesn't use openNextFile()
     server->on("/api/sd/files", HTTP_GET, [](AsyncWebServerRequest *request) {
         if (!sdReady) {
             sendJsonError(request, 503, "SD card not ready");
@@ -1420,17 +1421,142 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Invalid path");
             return;
         }
-        File dir = SD.open(path.c_str());
-        if (!dir) {
-            sendJsonError(request, 404, "Path not found");
-            return;
+        
+        JsonDocument doc;
+        doc["path"] = path;
+        doc["parent"] = parentSdPath(path);
+        doc["sd_ready"] = sdReady ? 1 : 0;
+        
+#if defined(ESP32)
+        uint64_t totalBytes = SD.cardSize();
+        uint64_t usedBytes = SD.usedBytes();
+        uint64_t freeBytes = (totalBytes > usedBytes) ? (totalBytes - usedBytes) : 0;
+        doc["total_bytes"] = totalBytes;
+        doc["used_bytes"] = usedBytes;
+        doc["free_bytes"] = freeBytes;
+#endif
+
+        struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
+        std::vector<EntryTemp> temp;
+        
+        // ALTERNATIVE APPROACH: Manual directory enumeration instead of openNextFile()
+        // This bypasses ESP32 SD library issues with directory iteration
+        
+        if (path == "/") {
+            // For root directory, enumerate known directories and files manually
+            static const char* ROOT_ENTRIES[] = {
+                "www", "config", "data", "logs", "backup", "uploads", "temp", "static",
+                "modbus.json", "tags.json", "error.log", "pending_notifications.jsonl",
+                "System Volume Information", "DCIM", "MISC", nullptr
+            };
+            
+            for (const char* entryName : ROOT_ENTRIES) {
+                if (!entryName) break;
+                
+                String entryPath = String("/") + entryName;
+                if (!SD.exists(entryPath.c_str())) continue;
+                
+                File entry = SD.open(entryPath.c_str());
+                if (entry) {
+                    bool isDir = entry.isDirectory();
+                    uint32_t size = isDir ? 0 : (uint32_t)entry.size();
+                    EntryTemp info { String(entryName), entryPath, isDir, size };
+                    temp.push_back(info);
+                    entry.close();
+                }
+            }
+            
+            // Additional scan for numbered directories (001, 002, etc.)
+            for (int i = 1; i <= 999; i++) {
+                String numDir = String("/") + String(i, DEC).c_str();
+                if (numDir.length() < 4) {
+                    while (numDir.length() < 4) numDir = String("/0") + numDir.substring(1);
+                }
+                if (SD.exists(numDir.c_str())) {
+                    File entry = SD.open(numDir.c_str());
+                    if (entry && entry.isDirectory()) {
+                        String displayName = numDir.substring(1);
+                        EntryTemp info { displayName, numDir, true, 0 };
+                        temp.push_back(info);
+                        entry.close();
+                    }
+                    if (entry) entry.close();
+                } else {
+                    break; // Stop scanning if we hit a gap
+                }
+            }
+        } else {
+            // For subdirectories, try both openNextFile and manual enumeration
+            File dir = SD.open(path.c_str());
+            if (dir && dir.isDirectory()) {
+                dir.rewindDirectory();
+                
+                // Try openNextFile first (might work in subdirectories)
+                while (true) {
+                    File entry = dir.openNextFile();
+                    if (!entry) break;
+                    
+                    String rawName = String(entry.name());
+                    if (rawName.startsWith(".")) {
+                        entry.close();
+                        continue;
+                    }
+                    
+                    String fullPath = String(entry.path());
+                    if (fullPath.length() == 0) {
+                        fullPath = joinSdPath(path, rawName);
+                    }
+                    
+                    String displayName = rawName;
+                    int idx = displayName.lastIndexOf('/');
+                    if (idx >= 0) displayName = displayName.substring(idx + 1);
+                    
+                    bool isDir = entry.isDirectory();
+                    uint32_t size = isDir ? 0 : (uint32_t)entry.size();
+                    
+                    EntryTemp info { displayName, fullPath, isDir, size };
+                    temp.push_back(info);
+                    entry.close();
+                    yield();
+                }
+                dir.close();
+            }
+            
+            // Manual enumeration for subdirectories too
+            static const char* COMMON_SUBDIRS[] = {
+                "data", "temp", "backup", "001", "002", "003", nullptr
+            };
+            
+            for (const char* subName : COMMON_SUBDIRS) {
+                if (!subName) break;
+                
+                String subPath = path;
+                if (!subPath.endsWith("/")) subPath += "/";
+                subPath += subName;
+                
+                if (SD.exists(subPath.c_str())) {
+                    // Check if already found
+                    bool found = false;
+                    for (const auto& existing : temp) {
+                        if (existing.path == subPath) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!found) {
+                        File entry = SD.open(subPath.c_str());
+                        if (entry) {
+                            bool isDir = entry.isDirectory();
+                            uint32_t size = isDir ? 0 : (uint32_t)entry.size();
+                            EntryTemp info { String(subName), subPath, isDir, size };
+                            temp.push_back(info);
+                            entry.close();
+                        }
+                    }
+                }
+            }
         }
-        if (!dir.isDirectory()) {
-            dir.close();
-            sendJsonError(request, 400, "Not a directory");
-            return;
-        }
-        dir.rewindDirectory();
 
         JsonDocument doc;
         doc["path"] = path;
@@ -1864,6 +1990,110 @@ void setupWebServer(int port /*= 80*/) {
     });
     sdMkdirHandler->setMaxContentLength(512);
     server->addHandler(sdMkdirHandler);
+
+    // Test endpoint to create common directories for testing
+    server->on("/api/sd/create-test-dirs", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        
+        static const char* TEST_DIRS[] = {
+            "/www", "/config", "/data", "/logs", "/backup", "/uploads", nullptr
+        };
+        
+        JsonDocument doc;
+        JsonArray created = doc["created"].to<JsonArray>();
+        JsonArray failed = doc["failed"].to<JsonArray>();
+        
+        for (const char* testDir : TEST_DIRS) {
+            if (!testDir) break;
+            
+            if (SD.exists(testDir)) {
+                // Directory already exists, skip
+                continue;
+            }
+            
+            if (SD.mkdir(testDir)) {
+                created.add(testDir);
+            } else {
+                failed.add(testDir);
+            }
+        }
+        
+        doc["created_count"] = created.size();
+        doc["failed_count"] = failed.size();
+        
+        if (failed.size() == 0) {
+            setStatusMessage(doc, "success", "Test directories created successfully");
+            sendCorsJsonDoc(request, 200, doc);
+        } else {
+            setStatusMessage(doc, "partial", "Some directories failed to create");
+            sendCorsJsonDoc(request, 207, doc); // Multi-status
+        }
+    });
+
+    // Debug endpoint to show raw SD card contents
+    server->on("/api/sd/debug", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!sdReady) {
+            sendJsonError(request, 503, "SD card not ready");
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["sd_ready"] = 1;
+        doc["debug_info"] = "Raw SD card inspection";
+        
+        // Get root directory info
+        File rootDir = SD.open("/");
+        if (rootDir && rootDir.isDirectory()) {
+            JsonArray entries = doc["raw_entries"].to<JsonArray>();
+            rootDir.rewindDirectory();
+            
+            int count = 0;
+            while (true) {
+                File entry = rootDir.openNextFile();
+                if (!entry) break;
+                
+                JsonObject entryObj = entries.add<JsonObject>();
+                entryObj["name"] = String(entry.name());
+                entryObj["path"] = String(entry.path());
+                entryObj["is_directory"] = entry.isDirectory();
+                entryObj["size"] = entry.isDirectory() ? 0 : (uint32_t)entry.size();
+                
+                entry.close();
+                count++;
+                if (count > 50) break; // Limit output
+            }
+            rootDir.close();
+            doc["entry_count"] = count;
+        }
+        
+        // Test some common paths
+        JsonArray tests = doc["existence_tests"].to<JsonArray>();
+        static const char* TEST_PATHS[] = {
+            "/www", "/config", "/data", "/logs", "/modbus.json", "/tags.json", nullptr
+        };
+        
+        for (const char* testPath : TEST_PATHS) {
+            if (!testPath) break;
+            
+            JsonObject test = tests.add<JsonObject>();
+            test["path"] = testPath;
+            test["exists"] = SD.exists(testPath) ? 1 : 0;
+            
+            if (SD.exists(testPath)) {
+                File f = SD.open(testPath);
+                if (f) {
+                    test["is_directory"] = f.isDirectory() ? 1 : 0;
+                    test["size"] = f.isDirectory() ? 0 : (uint32_t)f.size();
+                    f.close();
+                }
+            }
+        }
+        
+        sendCorsJsonDoc(request, 200, doc);
+    });
 
     server->on(
         "/api/sd/upload", HTTP_POST,
