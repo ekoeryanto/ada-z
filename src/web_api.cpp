@@ -1447,11 +1447,22 @@ void setupWebServer(int port /*= 80*/) {
         struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
         std::vector<EntryTemp> temp;
         bool haveRaw = false;
+        
+        // Improved directory listing approach for ESP32 compatibility
+        dir.rewindDirectory();  // Ensure we start from beginning
         while (true) {
             File entry = dir.openNextFile();
             if (!entry) break;
+            
             String fullPath = String(entry.path());
             String rawName = String(entry.name());
+            
+            // Skip entries with problematic names
+            if (rawName.startsWith(".") && (rawName == "." || rawName == "..")) {
+                entry.close();
+                continue;
+            }
+            
             if (fullPath.length() == 0) {
                 fullPath = rawName.startsWith("/") ? rawName : joinSdPath(path, rawName);
             }
@@ -1471,13 +1482,63 @@ void setupWebServer(int port /*= 80*/) {
             int idx = displayName.lastIndexOf('/');
             if (idx >= 0) displayName = displayName.substring(idx + 1);
             if (displayName.length() == 0) displayName = childPath;
-            EntryTemp info { displayName, childPath, entry.isDirectory(), entry.isDirectory() ? 0U : (uint32_t)entry.size() };
+            
+            // More robust directory detection
+            bool isDir = entry.isDirectory();
+            uint32_t fileSize = 0;
+            
+            if (!isDir) {
+                fileSize = (uint32_t)entry.size();
+                // Additional check: if size is 0 and name suggests directory, double-check
+                if (fileSize == 0 || displayName.indexOf('.') == -1) {
+                    File testEntry = SD.open(childPath.c_str());
+                    if (testEntry) {
+                        if (testEntry.isDirectory()) {
+                            isDir = true;
+                            fileSize = 0;
+                        }
+                        testEntry.close();
+                    }
+                }
+            }
+            
+            EntryTemp info { displayName, childPath, isDir, fileSize };
             temp.push_back(info);
             haveRaw = true;
             entry.close();
-            delay(0);
+            yield(); // Better than delay(0) for ESP32
         }
         dir.close();
+
+        // Additional fallback: check for common directories that might be missed
+        if (path == "/") {
+            static const char* COMMON_DIRS[] = {
+                "/www", "/config", "/data", "/logs", "/backup", "/uploads", "/temp"
+            };
+            for (const char* dirCandidate : COMMON_DIRS) {
+                if (!dirCandidate) continue;
+                if (!SD.exists(dirCandidate)) continue;
+                
+                // Check if already in our list
+                bool alreadyFound = false;
+                for (const auto& existing : temp) {
+                    if (existing.path == String(dirCandidate)) {
+                        alreadyFound = true;
+                        break;
+                    }
+                }
+                if (alreadyFound) continue;
+                
+                File f = SD.open(dirCandidate);
+                if (f && f.isDirectory()) {
+                    String display = String(dirCandidate);
+                    if (display.startsWith("/")) display = display.substring(1);
+                    EntryTemp info { display, String(dirCandidate), true, 0U };
+                    temp.push_back(info);
+                }
+                if (f) f.close();
+            }
+        }
 
         if (temp.empty()) {
             static const char* FALLBACK_PATHS[] = {
