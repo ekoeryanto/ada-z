@@ -34,6 +34,8 @@
 #include <math.h>
 #include <pgmspace.h>
 #include "static_uploader.h"
+#include <ctype.h>
+#include <stdlib.h>
 
 // ArduinoJson usage updated to recommended APIs
 // Use AsyncWebServer (instance defined in web_api_common.cpp)
@@ -131,6 +133,31 @@ String parentSdPath(const String &path) {
     int last = path.lastIndexOf('/');
     if (last <= 0) return "/";
     return path.substring(0, last);
+}
+
+String urlDecode(const String &src) {
+    String out;
+    out.reserve(src.length());
+    for (size_t i = 0; i < src.length(); ++i) {
+        char c = src.charAt(i);
+        if (c == '+') {
+            out += ' ';
+        } else if (c == '%' && i + 2 < src.length()) {
+            char h1 = src.charAt(i + 1);
+            char h2 = src.charAt(i + 2);
+            if (isxdigit(h1) && isxdigit(h2)) {
+                char buf[3] = { h1, h2, 0 };
+                char decoded = (char)strtol(buf, nullptr, 16);
+                out += decoded;
+                i += 2;
+            } else {
+                out += c;
+            }
+        } else {
+            out += c;
+        }
+    }
+    return out;
 }
 
 struct SdUploadContext {
@@ -1387,7 +1414,7 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 503, "SD card not ready");
             return;
         }
-        String rawPath = request->hasParam("path") ? request->getParam("path")->value() : "/";
+        String rawPath = request->hasParam("path") ? urlDecode(request->getParam("path")->value()) : "/";
         String path = sanitizeSdPath(rawPath);
         if (path.length() == 0) {
             sendJsonError(request, 400, "Invalid path");
@@ -1494,7 +1521,7 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Missing path");
             return;
         }
-        String path = sanitizeSdPath(request->getParam("path")->value());
+        String path = sanitizeSdPath(urlDecode(request->getParam("path")->value()));
         if (path.length() == 0) {
             sendJsonError(request, 400, "Invalid path");
             return;
@@ -1538,7 +1565,7 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Missing path");
             return;
         }
-        String path = sanitizeSdPath(request->getParam("path")->value());
+        String path = sanitizeSdPath(urlDecode(request->getParam("path")->value()));
         if (path.length() == 0 || path == "/") {
             sendJsonError(request, 400, "Invalid path");
             return;
@@ -1670,7 +1697,7 @@ void setupWebServer(int port /*= 80*/) {
                 }
                 String dirParam = "/";
                 if (request->hasParam("dir")) {
-                    dirParam = request->getParam("dir")->value();
+                    dirParam = urlDecode(request->getParam("dir")->value());
                 }
                 String targetDir = sanitizeSdPath(dirParam);
                 if (targetDir.length() == 0) {
