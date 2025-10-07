@@ -53,6 +53,24 @@ size_t currentSlaveIndex = 0;
 unsigned long lastPollTime = 0;
 String currentConfigJson;
 
+const char* toRegisterTypeString(ModbusRegisterType type) {
+    return (type == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
+}
+
+const char* toPollOperationString(ModbusPollOperation op) {
+    switch (op) {
+        case ModbusPollOperation::READ_HOLDING:
+            return "read_holding";
+        case ModbusPollOperation::READ_INPUT:
+            return "read_input";
+        case ModbusPollOperation::WRITE_SINGLE:
+            return "write_single";
+        case ModbusPollOperation::WRITE_MULTIPLE:
+            return "write_multiple";
+    }
+    return "unknown";
+}
+
 void preTransmission() {
     digitalWrite(RS485_DE, HIGH);
     delayMicroseconds(10);
@@ -320,23 +338,52 @@ const std::vector<ModbusSlave>& getModbusSlaves() {
     return slaves;
 }
 
-String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t regAddress, uint8_t count, uint32_t baudRate) {
+String pollModbus(const ModbusPollRequest& request) {
     CriticalSection guard(modbusMutex); // Ensure exclusive access to the bus
 
     bool baudChanged = false;
-    if (baudRate > 0 && baudRate != currentModbusBaud) {
+    if (request.baudRate > 0 && request.baudRate != currentModbusBaud) {
         baudChanged = true;
         rs485.end();
-        rs485.begin(baudRate, SERIAL_8N1, RS485_RX, RS485_TX);
+        rs485.begin(request.baudRate, SERIAL_8N1, RS485_RX, RS485_TX);
     }
 
-    modbusNode.begin(slaveAddress, rs485);
+    modbusNode.begin(request.slaveAddress, rs485);
 
-    uint8_t result;
-    if (regType == ModbusRegisterType::HOLDING_REGISTER) {
-        result = modbusNode.readHoldingRegisters(regAddress, count);
-    } else {
-        result = modbusNode.readInputRegisters(regAddress, count);
+    uint8_t result = modbusNode.ku8MBSuccess;
+    ModbusRegisterType regTypeForRead = ModbusRegisterType::HOLDING_REGISTER;
+    uint16_t effectiveCount = request.count;
+
+    switch (request.operation) {
+        case ModbusPollOperation::READ_HOLDING:
+            regTypeForRead = ModbusRegisterType::HOLDING_REGISTER;
+            modbusNode.clearResponseBuffer();
+            result = modbusNode.readHoldingRegisters(request.registerAddress, effectiveCount);
+            break;
+        case ModbusPollOperation::READ_INPUT:
+            regTypeForRead = ModbusRegisterType::INPUT_REGISTER;
+            modbusNode.clearResponseBuffer();
+            result = modbusNode.readInputRegisters(request.registerAddress, effectiveCount);
+            break;
+        case ModbusPollOperation::WRITE_SINGLE:
+            if (!request.values.empty()) {
+                result = modbusNode.writeSingleRegister(request.registerAddress, request.values[0]);
+            } else {
+                result = 0xFF; // Custom error code for invalid payload
+            }
+            break;
+        case ModbusPollOperation::WRITE_MULTIPLE:
+            if (!request.values.empty()) {
+                modbusNode.clearTransmitBuffer();
+                for (size_t i = 0; i < request.values.size(); ++i) {
+                    modbusNode.setTransmitBuffer(i, request.values[i]);
+                }
+                effectiveCount = static_cast<uint16_t>(request.values.size());
+                result = modbusNode.writeMultipleRegisters(request.registerAddress, effectiveCount);
+            } else {
+                result = 0xFF; // Custom error code for invalid payload
+            }
+            break;
     }
 
     if (baudChanged) {
@@ -344,23 +391,48 @@ String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t reg
         rs485.begin(currentModbusBaud, SERIAL_8N1, RS485_RX, RS485_TX);
     }
 
-    const size_t baseCapacity = 256 + (count * 12);
+    const size_t maxItems = (request.operation == ModbusPollOperation::WRITE_SINGLE) ? 1 :
+                            (request.operation == ModbusPollOperation::WRITE_MULTIPLE ? request.values.size() : effectiveCount);
+    const size_t baseCapacity = 256 + (maxItems * 12);
     auto doc = makeSuccessDoc("", baseCapacity);
-    doc["slave_address"] = slaveAddress;
-    doc["register_type"] = (regType == ModbusRegisterType::HOLDING_REGISTER) ? "holding" : "input";
-    doc["register_address"] = regAddress;
-    doc["count"] = count;
-    if (baudRate > 0) {
-        doc["baud_rate"] = baudRate;
+    doc["operation"] = toPollOperationString(request.operation);
+    doc["slave_address"] = request.slaveAddress;
+    doc["register_address"] = request.registerAddress;
+    if (request.baudRate > 0) {
+        doc["baud_rate"] = request.baudRate;
+    }
+
+    if (request.operation == ModbusPollOperation::READ_HOLDING || request.operation == ModbusPollOperation::READ_INPUT) {
+        doc["register_type"] = toRegisterTypeString(regTypeForRead);
+        doc["count"] = effectiveCount;
+    } else {
+        doc["write_count"] = maxItems;
     }
 
     if (result == modbusNode.ku8MBSuccess) {
-        JsonArray data = doc["data"].to<JsonArray>();
-        for (int i = 0; i < count; i++) {
-            data.add(modbusNode.getResponseBuffer(i));
+        if (request.operation == ModbusPollOperation::READ_HOLDING ||
+            request.operation == ModbusPollOperation::READ_INPUT) {
+            JsonArray data = doc["data"].to<JsonArray>();
+            for (uint8_t i = 0; i < effectiveCount; i++) {
+                data.add(modbusNode.getResponseBuffer(i));
+            }
+        } else {
+            JsonArray valuesArray = doc["values"].to<JsonArray>();
+            if (request.operation == ModbusPollOperation::WRITE_SINGLE && !request.values.empty()) {
+                valuesArray.add(request.values[0]);
+            } else {
+                for (uint16_t value : request.values) {
+                    valuesArray.add(value);
+                }
+            }
         }
     } else {
-        String errMsg = String("Modbus error: ") + String(result, HEX);
+        String errMsg;
+        if (result == 0xFF) {
+            errMsg = F("Invalid Modbus payload");
+        } else {
+            errMsg = String(F("Modbus error: 0x")) + String(result, HEX);
+        }
         setStatusMessage(doc, "error", errMsg);
         doc["error_code"] = result;
     }

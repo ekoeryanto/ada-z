@@ -608,24 +608,126 @@ void setupWebServer(int port /*= 80*/) {
         JsonObject obj = json.as<JsonObject>();
         if (obj.isNull()) {
             sendJsonError(request, 400, "Invalid JSON");
-
             return;
         }
 
-        uint8_t slaveAddress = obj["slave_address"];
-        String regTypeStr = obj["register_type"];
-        uint16_t regAddress = obj["register_address"];
-        uint8_t count = obj["count"];
-
-        if (count == 0 || count > 125) {
-            sendJsonError(request, 400, "Invalid count (must be 1-125)");
-
+        if (!obj.containsKey("slave_address") || !obj.containsKey("register_address")) {
+            sendJsonError(request, 400, "Missing slave_address or register_address");
             return;
         }
 
-        ModbusRegisterType regType = (regTypeStr.equalsIgnoreCase("input")) ? ModbusRegisterType::INPUT_REGISTER : ModbusRegisterType::HOLDING_REGISTER;
+        ModbusPollRequest pollRequest;
+        uint32_t slaveAddressRaw = obj["slave_address"].as<uint32_t>();
+        uint32_t registerAddressRaw = obj["register_address"].as<uint32_t>();
 
-        String result = pollModbus(slaveAddress, regType, regAddress, count);
+        if (slaveAddressRaw > 247) {
+            sendJsonError(request, 400, "Invalid slave address (0-247)");
+            return;
+        }
+        if (registerAddressRaw > 0xFFFF) {
+            sendJsonError(request, 400, "Invalid register address");
+            return;
+        }
+
+        pollRequest.slaveAddress = static_cast<uint8_t>(slaveAddressRaw);
+        pollRequest.registerAddress = static_cast<uint16_t>(registerAddressRaw);
+
+        if (obj["baud_rate"].is<uint32_t>()) {
+            pollRequest.baudRate = obj["baud_rate"].as<uint32_t>();
+        }
+
+        String operationStr = obj["operation"].as<String>();
+        operationStr.trim();
+        operationStr.toLowerCase();
+
+        if (operationStr.length() == 0) {
+            // Backwards compatibility: infer from register_type
+            String regTypeStr = obj["register_type"].as<String>();
+            if (regTypeStr.equalsIgnoreCase("input")) {
+                operationStr = "read_input";
+            } else {
+                operationStr = "read_holding";
+            }
+        }
+
+        if (operationStr == "read_holding") {
+            pollRequest.operation = ModbusPollOperation::READ_HOLDING;
+        } else if (operationStr == "read_input") {
+            pollRequest.operation = ModbusPollOperation::READ_INPUT;
+        } else if (operationStr == "write_single" || operationStr == "write_register") {
+            pollRequest.operation = ModbusPollOperation::WRITE_SINGLE;
+        } else if (operationStr == "write_multiple" || operationStr == "write_multiple_registers") {
+            pollRequest.operation = ModbusPollOperation::WRITE_MULTIPLE;
+        } else {
+            sendJsonError(request, 400, "Unsupported operation");
+            return;
+        }
+
+        switch (pollRequest.operation) {
+            case ModbusPollOperation::READ_HOLDING:
+            case ModbusPollOperation::READ_INPUT: {
+                if (!obj.containsKey("count")) {
+                    sendJsonError(request, 400, "Missing count for read operation");
+                    return;
+                }
+                uint16_t count = obj["count"].as<uint16_t>();
+                if (count == 0 || count > 125) {
+                    sendJsonError(request, 400, "Invalid count (must be 1-125)");
+                    return;
+                }
+                pollRequest.count = static_cast<uint8_t>(count);
+                break;
+            }
+            case ModbusPollOperation::WRITE_SINGLE: {
+                if (obj.containsKey("value")) {
+                    int32_t value = obj["value"].as<int32_t>();
+                    if (value < 0 || value > 0xFFFF) {
+                        sendJsonError(request, 400, "Value must be 0-65535");
+                        return;
+                    }
+                    pollRequest.values.push_back(static_cast<uint16_t>(value));
+                } else if (obj["values"].is<JsonArray>()) {
+                    JsonArray arr = obj["values"].as<JsonArray>();
+                    if (arr.size() > 0) {
+                        int32_t value = arr[0].as<int32_t>();
+                        if (value < 0 || value > 0xFFFF) {
+                            sendJsonError(request, 400, "Value must be 0-65535");
+                            return;
+                        }
+                        pollRequest.values.push_back(static_cast<uint16_t>(value));
+                    }
+                }
+                if (pollRequest.values.empty()) {
+                    sendJsonError(request, 400, "Missing value for write_single");
+                    return;
+                }
+                break;
+            }
+            case ModbusPollOperation::WRITE_MULTIPLE: {
+                if (!obj["values"].is<JsonArray>()) {
+                    sendJsonError(request, 400, "Missing values array for write_multiple");
+                    return;
+                }
+                JsonArray arr = obj["values"].as<JsonArray>();
+                if (arr.size() == 0 || arr.size() > 123) {
+                    sendJsonError(request, 400, "Invalid values count (must be 1-123)");
+                    return;
+                }
+                pollRequest.values.reserve(arr.size());
+                for (JsonVariant v : arr) {
+                    int32_t value = v.as<int32_t>();
+                    if (value < 0 || value > 0xFFFF) {
+                        sendJsonError(request, 400, "Values must be 0-65535");
+                        pollRequest.values.clear();
+                        return;
+                    }
+                    pollRequest.values.push_back(static_cast<uint16_t>(value));
+                }
+                break;
+            }
+        }
+
+        String result = pollModbus(pollRequest);
         JsonDocument maybe;
         DeserializationError derr = deserializeJson(maybe, result);
         if (derr) {

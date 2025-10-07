@@ -18,6 +18,22 @@ enum class ModbusRegisterType {
     INPUT_REGISTER
 };
 
+enum class ModbusPollOperation {
+    READ_HOLDING,
+    READ_INPUT,
+    WRITE_SINGLE,
+    WRITE_MULTIPLE
+};
+
+struct ModbusPollRequest {
+    uint8_t slaveAddress = 0;
+    uint16_t registerAddress = 0;
+    uint8_t count = 0;
+    uint32_t baudRate = 0;
+    ModbusPollOperation operation = ModbusPollOperation::READ_HOLDING;
+    std::vector<uint16_t> values;
+};
+
 struct ModbusRegister {
     String id;
     String key;
@@ -51,6 +67,6 @@ String getDefaultModbusConfigJson();
 
 const std::vector<ModbusSlave>& getModbusSlaves();
 
-String pollModbus(uint8_t slaveAddress, ModbusRegisterType regType, uint16_t regAddress, uint8_t count, uint32_t baudRate = 0);
+String pollModbus(const ModbusPollRequest& request);
 
 #endif // MODBUS_MANAGER_H
