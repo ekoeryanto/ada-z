@@ -1432,63 +1432,6 @@ void setupWebServer(int port /*= 80*/) {
         }
         dir.rewindDirectory();
 
-        struct SdListItem {
-            String displayName;
-            String fullPath;
-            bool isDir;
-            uint32_t size;
-        };
-
-        std::vector<SdListItem> items;
-        File entry = dir.openNextFile();
-        while (entry) {
-            String rawName = String(entry.name());
-            if (rawName.length() == 0) {
-                entry.close();
-                entry = dir.openNextFile();
-                delay(0);
-                continue;
-            }
-            if (rawName.endsWith("/")) {
-                rawName.remove(rawName.length() - 1);
-            }
-            String fullPath;
-            if (rawName.startsWith("/")) {
-                fullPath = sanitizeSdPath(rawName);
-            } else {
-                fullPath = sanitizeSdPath(joinSdPath(path, rawName));
-            }
-            if (fullPath.length() == 0) {
-                entry.close();
-                entry = dir.openNextFile();
-                delay(0);
-                continue;
-            }
-            String displayName = rawName;
-            int slashIdx = displayName.lastIndexOf('/');
-            if (slashIdx >= 0) {
-                displayName = displayName.substring(slashIdx + 1);
-            }
-            if (displayName.length() == 0) {
-                displayName = rawName;
-            }
-            SdListItem item;
-            item.displayName = displayName;
-            item.fullPath = fullPath;
-            item.isDir = entry.isDirectory();
-            item.size = item.isDir ? 0U : (uint32_t)entry.size();
-            items.push_back(item);
-            entry.close();
-            entry = dir.openNextFile();
-            delay(0);
-        }
-        dir.close();
-
-        std::sort(items.begin(), items.end(), [](const SdListItem &a, const SdListItem &b) {
-            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
-            return a.displayName.compareTo(b.displayName) < 0;
-        });
-
         JsonDocument doc;
         doc["path"] = path;
         doc["parent"] = parentSdPath(path);
@@ -1501,11 +1444,51 @@ void setupWebServer(int port /*= 80*/) {
         doc["used_bytes"] = usedBytes;
         doc["free_bytes"] = freeBytes;
 #endif
-        JsonArray arr = doc["entries"].to<JsonArray>();
-        for (const auto &it : items) {
+        JsonArray arr = doc.createNestedArray("entries");
+        struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
+        std::vector<EntryTemp> temp;
+        for (File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+            String rawName = String(entry.name());
+            if (rawName.length() == 0) {
+                entry.close();
+                delay(0);
+                continue;
+            }
+            if (rawName.endsWith("/")) rawName.remove(rawName.length() - 1);
+            String combined = rawName.startsWith("/") ? rawName : joinSdPath(path, rawName);
+            String childPath = sanitizeSdPath(combined);
+            if (childPath.length() == 0) {
+                childPath = combined;
+            }
+            if (!childPath.startsWith("/")) {
+                childPath = "/" + childPath;
+            }
+            if (childPath.length() == 0) {
+                entry.close();
+                delay(0);
+                continue;
+            }
+            String displayName = rawName;
+            int idx = displayName.lastIndexOf('/');
+            if (idx >= 0) displayName = displayName.substring(idx + 1);
+            if (displayName.length() == 0) displayName = rawName;
+            EntryTemp info { displayName, childPath, entry.isDirectory(), entry.isDirectory() ? 0U : (uint32_t)entry.size() };
+            temp.push_back(info);
+            entry.close();
+            delay(0);
+        }
+        dir.close();
+
+        std::sort(temp.begin(), temp.end(), [](const EntryTemp &a, const EntryTemp &b) {
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            return a.name.compareTo(b.name) < 0;
+        });
+
+        doc["entries_count"] = (uint32_t)temp.size();
+        for (const auto &it : temp) {
             JsonObject obj = arr.add<JsonObject>();
-            obj["name"] = it.displayName;
-            obj["path"] = it.fullPath;
+            obj["name"] = it.name;
+            obj["path"] = it.path;
             obj["is_dir"] = it.isDir ? 1 : 0;
             obj["size"] = it.size;
         }
@@ -1615,7 +1598,8 @@ void setupWebServer(int port /*= 80*/) {
             sendJsonError(request, 400, "Invalid directory name");
             return;
         }
-        if (!SD.exists(parentPath.c_str())) {
+        bool parentExists = parentPath == "/" ? true : SD.exists(parentPath.c_str());
+        if (!parentExists) {
             sendJsonError(request, 404, "Parent directory not found");
             return;
         }
