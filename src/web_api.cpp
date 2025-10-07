@@ -1439,123 +1439,44 @@ void setupWebServer(int port /*= 80*/) {
         struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
         std::vector<EntryTemp> temp;
         
-        // ALTERNATIVE APPROACH: Manual directory enumeration instead of openNextFile()
-        // This bypasses ESP32 SD library issues with directory iteration
-        
-        if (path == "/") {
-            // For root directory, enumerate known directories and files manually
-            static const char* ROOT_ENTRIES[] = {
-                "www", "config", "data", "logs", "backup", "uploads", "temp", "static",
-                "modbus.json", "tags.json", "error.log", "pending_notifications.jsonl",
-                "System Volume Information", "DCIM", "MISC", nullptr
-            };
+        // Use proper ESP32 directory listing with openNextFile()
+        File dir = SD.open(path.c_str());
+        if (dir && dir.isDirectory()) {
+            dir.rewindDirectory();
             
-            for (const char* entryName : ROOT_ENTRIES) {
-                if (!entryName) break;
+            while (true) {
+                File entry = dir.openNextFile();
+                if (!entry) break;
                 
-                String entryPath = String("/") + entryName;
-                if (!SD.exists(entryPath.c_str())) continue;
+                String rawName = String(entry.name());
+                String fullPath = String(entry.path());
                 
-                File entry = SD.open(entryPath.c_str());
-                if (entry) {
-                    bool isDir = entry.isDirectory();
-                    uint32_t size = isDir ? 0 : (uint32_t)entry.size();
-                    EntryTemp info { String(entryName), entryPath, isDir, size };
-                    temp.push_back(info);
+                // Skip hidden/system files
+                if (rawName.startsWith(".")) {
                     entry.close();
+                    continue;
                 }
-            }
-            
-            // Additional scan for numbered directories (001, 002, etc.)
-            for (int i = 1; i <= 999; i++) {
-                String numDir = String("/") + String(i, DEC).c_str();
-                if (numDir.length() < 4) {
-                    while (numDir.length() < 4) numDir = String("/0") + numDir.substring(1);
-                }
-                if (SD.exists(numDir.c_str())) {
-                    File entry = SD.open(numDir.c_str());
-                    if (entry && entry.isDirectory()) {
-                        String displayName = numDir.substring(1);
-                        EntryTemp info { displayName, numDir, true, 0 };
-                        temp.push_back(info);
-                        entry.close();
-                    }
-                    if (entry) entry.close();
-                } else {
-                    break; // Stop scanning if we hit a gap
-                }
-            }
-        } else {
-            // For subdirectories, try both openNextFile and manual enumeration
-            File dir = SD.open(path.c_str());
-            if (dir && dir.isDirectory()) {
-                dir.rewindDirectory();
                 
-                // Try openNextFile first (might work in subdirectories)
-                while (true) {
-                    File entry = dir.openNextFile();
-                    if (!entry) break;
-                    
-                    String rawName = String(entry.name());
-                    if (rawName.startsWith(".")) {
-                        entry.close();
-                        continue;
-                    }
-                    
-                    String fullPath = String(entry.path());
-                    if (fullPath.length() == 0) {
-                        fullPath = joinSdPath(path, rawName);
-                    }
-                    
-                    String displayName = rawName;
-                    int idx = displayName.lastIndexOf('/');
-                    if (idx >= 0) displayName = displayName.substring(idx + 1);
-                    
-                    bool isDir = entry.isDirectory();
-                    uint32_t size = isDir ? 0 : (uint32_t)entry.size();
-                    
-                    EntryTemp info { displayName, fullPath, isDir, size };
-                    temp.push_back(info);
-                    entry.close();
-                    yield();
+                // Build proper paths
+                if (fullPath.length() == 0) {
+                    fullPath = joinSdPath(path, rawName);
                 }
-                dir.close();
-            }
-            
-            // Manual enumeration for subdirectories too
-            static const char* COMMON_SUBDIRS[] = {
-                "data", "temp", "backup", "001", "002", "003", nullptr
-            };
-            
-            for (const char* subName : COMMON_SUBDIRS) {
-                if (!subName) break;
                 
-                String subPath = path;
-                if (!subPath.endsWith("/")) subPath += "/";
-                subPath += subName;
+                // Extract display name
+                String displayName = rawName;
+                int idx = displayName.lastIndexOf('/');
+                if (idx >= 0) displayName = displayName.substring(idx + 1);
                 
-                if (SD.exists(subPath.c_str())) {
-                    // Check if already found
-                    bool found = false;
-                    for (const auto& existing : temp) {
-                        if (existing.path == subPath) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!found) {
-                        File entry = SD.open(subPath.c_str());
-                        if (entry) {
-                            bool isDir = entry.isDirectory();
-                            uint32_t size = isDir ? 0 : (uint32_t)entry.size();
-                            EntryTemp info { String(subName), subPath, isDir, size };
-                            temp.push_back(info);
-                            entry.close();
-                        }
-                    }
-                }
+                // Get file/directory info
+                bool isDir = entry.isDirectory();
+                uint32_t size = isDir ? 0 : (uint32_t)entry.size();
+                
+                EntryTemp info { displayName, fullPath, isDir, size };
+                temp.push_back(info);
+                entry.close();
+                yield();
             }
+            dir.close();
         }
         
         // Sort entries (directories first, then alphabetical)
