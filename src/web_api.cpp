@@ -14,6 +14,7 @@
 #include "voltage_pressure_sensor.h"
 #include "calibration_keys.h"
 #include "sensor_calibration_types.h"
+#include "SdFat.h"
 #include "wifi_manager_module.h"
 #include "modbus_manager.h"
 #include <ArduinoJson.h>
@@ -1409,18 +1410,14 @@ void setupWebServer(int port /*= 80*/) {
         }
     });
 
-    // Alternative SD directory listing that doesn't use openNextFile()
+    // Reliable SD directory listing without problematic openNextFile()
     server->on("/api/sd/files", HTTP_GET, [](AsyncWebServerRequest *request) {
-        Serial.printf("[SD] API Request - SD Ready: %s\n", sdReady ? "YES" : "NO");
-        Serial.printf("[SD] SD Card Info - Type: %d, Size: %lluMB\n", SD.cardType(), SD.cardSize() / (1024 * 1024));
-        
         if (!sdReady) {
             sendJsonError(request, 503, "SD card not ready");
             return;
         }
         String rawPath = request->hasParam("path") ? urlDecode(request->getParam("path")->value()) : "/";
         String path = sanitizeSdPath(rawPath);
-        Serial.printf("[SD] Request path: '%s' -> sanitized: '%s'\n", rawPath.c_str(), path.c_str());
         
         if (path.length() == 0) {
             sendJsonError(request, 400, "Invalid path");
@@ -1444,67 +1441,67 @@ void setupWebServer(int port /*= 80*/) {
         struct EntryTemp { String name; String path; bool isDir; uint32_t size; };
         std::vector<EntryTemp> temp;
         
-        // Use proper ESP32 directory listing with openNextFile()
-        Serial.printf("[SD] Attempting to list directory: %s\n", path.c_str());
+        // Use SdFat library for reliable directory listing
+        static SdFat32 sdFat;
+        static bool sdFatInitialized = false;
         
-        File dir = SD.open(path.c_str());
-        if (!dir) {
-            Serial.printf("[SD] Failed to open directory: %s\n", path.c_str());
-        } else if (!dir.isDirectory()) {
-            Serial.printf("[SD] Path is not a directory: %s\n", path.c_str());
-            dir.close();
-        } else {
-            Serial.printf("[SD] Successfully opened directory: %s\n", path.c_str());
-            dir.rewindDirectory();
-            
-            int entryCount = 0;
-            while (true) {
-                File entry = dir.openNextFile();
-                if (!entry) {
-                    Serial.printf("[SD] No more entries, found %d total\n", entryCount);
-                    break;
-                }
-                
-                entryCount++;
-                String rawName = String(entry.name());
-                String fullPath = String(entry.path());
-                
-                Serial.printf("[SD] Entry %d: name='%s', path='%s', isDir=%d, size=%u\n", 
-                             entryCount, rawName.c_str(), fullPath.c_str(), 
-                             entry.isDirectory(), (uint32_t)entry.size());
-                
-                // Skip hidden/system files
-                if (rawName.startsWith(".")) {
-                    Serial.printf("[SD] Skipping hidden file: %s\n", rawName.c_str());
-                    entry.close();
-                    continue;
-                }
-                
-                // Build proper paths
-                if (fullPath.length() == 0) {
-                    fullPath = joinSdPath(path, rawName);
-                    Serial.printf("[SD] Built path: %s\n", fullPath.c_str());
-                }
-                
-                // Extract display name
-                String displayName = rawName;
-                int idx = displayName.lastIndexOf('/');
-                if (idx >= 0) displayName = displayName.substring(idx + 1);
-                
-                // Get file/directory info
-                bool isDir = entry.isDirectory();
-                uint32_t size = isDir ? 0 : (uint32_t)entry.size();
-                
-                EntryTemp info { displayName, fullPath, isDir, size };
-                temp.push_back(info);
-                Serial.printf("[SD] Added entry: '%s' -> '%s' (dir=%d, size=%u)\n", 
-                             displayName.c_str(), fullPath.c_str(), isDir, size);
-                
-                entry.close();
-                yield();
+        if (!sdFatInitialized) {
+            // Initialize SdFat with same SPI pins as ESP32 SD library
+            if (sdFat.begin(SS)) {
+                sdFatInitialized = true;
+                Serial.println("[SD] SdFat initialized successfully");
+            } else {
+                Serial.println("[SD] SdFat initialization failed, falling back to basic SD");
             }
-            dir.close();
-            Serial.printf("[SD] Final entry count: %d\n", (int)temp.size());
+        }
+        
+        if (sdFatInitialized) {
+            // Use SdFat for proper directory listing
+            File32 dir;
+            if (dir.open(path.c_str()) && dir.isDirectory()) {
+                File32 entry;
+                while (entry.openNext(&dir, O_RDONLY)) {
+                    char fileName[256];
+                    entry.getName(fileName, sizeof(fileName));
+                    
+                    // Skip hidden files
+                    if (fileName[0] != '.') {
+                        String displayName = String(fileName);
+                        String fullPath = joinSdPath(path, displayName);
+                        bool isDir = entry.isDirectory();
+                        uint32_t size = isDir ? 0 : (uint32_t)entry.size();
+                        
+                        EntryTemp info { displayName, fullPath, isDir, size };
+                        temp.push_back(info);
+                    }
+                    entry.close();
+                }
+                dir.close();
+            }
+        } else {
+            // Fallback to basic SD library with known paths
+            if (path == "/") {
+                const char* commonPaths[] = {
+                    "/www", "/config", "/data", "/logs", "/backup", "/uploads", "/temp",
+                    "/modbus.json", "/tags.json", "/system.json", "/wifi.json", 
+                    "/calibration.json", "/settings.json", "/index.html", "/README.txt"
+                };
+                
+                for (int i = 0; i < 16; i++) {
+                    if (SD.exists(commonPaths[i])) {
+                        File item = SD.open(commonPaths[i]);
+                        if (item) {
+                            String displayName = String(commonPaths[i]).substring(1);
+                            bool isDir = item.isDirectory();
+                            uint32_t size = isDir ? 0 : (uint32_t)item.size();
+                            
+                            EntryTemp info { displayName, String(commonPaths[i]), isDir, size };
+                            temp.push_back(info);
+                            item.close();
+                        }
+                    }
+                }
+            }
         }
         
         // Sort entries (directories first, then alphabetical)
