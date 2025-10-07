@@ -41,8 +41,11 @@
             <input v-model.number="form.value" type="number" min="0" max="65535" required class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 focus:border-brand-500/60 focus:outline-none" />
           </label>
           <label class="grid gap-2">
-            <span class="text-sm font-medium text-slate-300">Baud Rate (opsional)</span>
-            <input v-model.number="form.baud_rate" type="number" min="0" class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 focus:border-brand-500/60 focus:outline-none" placeholder="Gunakan default jika kosong" />
+            <span class="text-sm font-medium text-slate-300">Baud Rate</span>
+            <select v-model="form.baud_rate" class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 focus:border-brand-500/60 focus:outline-none">
+              <option value="">Gunakan default</option>
+              <option v-for="rate in baudRateOptions" :key="rate" :value="String(rate)">{{ rate }}</option>
+            </select>
           </label>
         </div>
 
@@ -113,7 +116,7 @@ const form = reactive({
   count: 10,
   value: 0,
   valuesText: '',
-  baud_rate: null,
+  baud_rate: '',
 });
 
 const polling = ref(false);
@@ -123,6 +126,7 @@ const result = ref(null);
 const isReadOperation = computed(() => form.operation === 'read_holding' || form.operation === 'read_input');
 const isWriteSingle = computed(() => form.operation === 'write_single');
 const isWriteMultiple = computed(() => form.operation === 'write_multiple');
+const baudRateOptions = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
 
 async function sendPollRequest() {
   polling.value = true;
@@ -136,8 +140,12 @@ async function sendPollRequest() {
       register_address: form.register_address,
     };
 
-    if (form.baud_rate && form.baud_rate > 0) {
-      payload.baud_rate = form.baud_rate;
+    if (form.baud_rate !== '') {
+      const selectedBaud = Number(form.baud_rate);
+      if (!Number.isFinite(selectedBaud) || selectedBaud <= 0) {
+        throw new Error('Baud rate tidak valid');
+      }
+      payload.baud_rate = selectedBaud;
     }
 
     if (isReadOperation.value) {
