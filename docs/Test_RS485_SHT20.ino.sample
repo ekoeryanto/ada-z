@@ -1,0 +1,38 @@
+const byte rxPin = 16; //rx2
+const byte txPin = 17; //tx2
+HardwareSerial modul(1);
+
+#include <ModbusMaster.h>
+ModbusMaster node;
+uint8_t result1;
+float temp,humi,temp2,humi2;
+#define READING_DELAY   1000
+long previousMillis;
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  modul.begin(9600, SERIAL_8N1, rxPin, txPin);
+  node.begin(1, modul);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  if (millis() - previousMillis > READING_DELAY) {
+    sendData();
+    previousMillis = millis();
+  }
+}
+
+void sendData() {
+  result1 = node.readInputRegisters(0x001, 2);
+  if (result1 == node.ku8MBSuccess) {
+    temp = (node.getResponseBuffer(0x000) / 10.0f ); //temp
+    humi = (node.getResponseBuffer(0x001) / 10.0f ); //humi
+  }
+
+  Serial.print("temp = ");
+  Serial.print(temp);
+  Serial.print(" , humi = ");
+  Serial.println(humi);
+}
