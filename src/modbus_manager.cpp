@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "json_helper.h"
+#include "web_api_common.h"
 
 namespace {
 
@@ -174,6 +175,8 @@ bool applyModbusConfig(const String &json) {
     String canonical;
     serializeJson(doc, canonical);
     currentConfigJson = canonical;
+
+    flagSensorsSnapshotUpdate();
     return true;
 }
 
@@ -204,6 +207,8 @@ void setupModbus() {
 }
 
 void processRegisterValue(ModbusRegister& reg, uint16_t* buffer) {
+    float previous = reg.value;
+    bool previousNan = isnan(previous);
     uint32_t temp_val;
     switch (reg.data_type) {
         case ModbusDataType::UINT16:
@@ -229,6 +234,21 @@ void processRegisterValue(ModbusRegister& reg, uint16_t* buffer) {
         reg.value /= reg.divisor;
     }
     reg.last_update_ms = millis();
+
+    bool currentNan = isnan(reg.value);
+    bool valueChanged = false;
+    if (previousNan != currentNan) {
+        valueChanged = true;
+    } else if (!currentNan) {
+        float diff = fabs(reg.value - previous);
+        if (diff > 0.0005f) {
+            valueChanged = true;
+        }
+    }
+
+    if (valueChanged) {
+        flagSensorsSnapshotUpdate();
+    }
 }
 
 void loopModbus() {
@@ -275,7 +295,12 @@ void loopModbus() {
             processRegisterValue(reg, buffer);
             success = true;
         } else {
+            float previous = reg.value;
             reg.value = NAN;
+            reg.last_update_ms = millis();
+            if (!isnan(previous)) {
+                flagSensorsSnapshotUpdate();
+            }
         }
     }
 
@@ -284,6 +309,10 @@ void loopModbus() {
         currentSlave.last_successful_comm_ms = now;
     } else {
         currentSlave.online = false;
+    }
+
+    if (!success) {
+        flagSensorsSnapshotUpdate();
     }
 }
 

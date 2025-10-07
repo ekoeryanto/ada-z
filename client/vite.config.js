@@ -9,7 +9,7 @@ export default defineConfig({
     open: false,
     proxy: {
       '/api': {
-        target: 'http://192.168.111.29',
+        target: 'http://192.168.111.88',
         changeOrigin: true,
         secure: false,
         // Allow websocket proxying if needed and avoid premature timeouts for long-lived SSE

@@ -309,9 +309,9 @@ void loop() {
         }
 
         if (!dueSensorIndices.empty()) {
-            // Build minimal batch JSON payload for pending notification storage
-            JsonDocument doc;
-            doc["timestamp"] = getIsoTimestamp();
+        // Build minimal batch JSON payload for pending notification storage
+        JsonDocument doc;
+        doc["timestamp"] = getIsoTimestamp();
             doc["rtu"] = String(getChipId());
             JsonArray tags = doc["tags"].to<JsonArray>();
             for (int k = 0; k < (int)dueSensorIndices.size(); ++k) {
@@ -336,6 +336,8 @@ void loop() {
         delete[] rawVals;
         delete[] smoothedVals;
         delete[] voltVals;
+
+        flagSensorsSnapshotUpdate();
 
         // Append ADS1115 A0/A1 readings (raw, mV, mA) to CSV and serial output
         for (int ch = 0; ch <= 1; ++ch) {
@@ -406,5 +408,6 @@ void loop() {
     // Service OTA and web server
     serviceWifiManager();
     handleOtaUpdate(); // This handles ArduinoOTA, which is separate
+    serviceSensorsSnapshotUpdates();
     // handleWebServerClients() is no longer needed with ESPAsyncWebServer
 }

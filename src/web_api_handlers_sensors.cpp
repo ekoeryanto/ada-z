@@ -37,6 +37,8 @@ void registerSensorHandlers(AsyncWebServer *server) {
         server->addHandler(eventSourceDebugAlias);
     }
 
+    ensureSensorSseRegistered(server);
+
     // Expose sensor/tag endpoints
     auto handleTagRead = [](AsyncWebServerRequest *request) {
         int sampling = 0;

@@ -108,6 +108,10 @@ void buildSensorsReadingsJson(JsonDocument &doc) {
         JsonObject meta = sensor["meta"].to<JsonObject>();
         meta["raw_adc"] = raw;
         meta["smoothed_adc"] = roundToDecimals(smoothed, 2);
+        meta["cal_zero_raw_adc"] = cal.zeroRawAdc;
+        meta["cal_span_raw_adc"] = cal.spanRawAdc;
+        meta["cal_zero_pressure_value"] = cal.zeroPressureValue;
+        meta["cal_span_pressure_value"] = cal.spanPressureValue;
         meta["cal_zero"] = cal.zeroPressureValue;
         meta["cal_span"] = cal.spanPressureValue;
         meta["cal_scale"] = roundToDecimals(cal.scale, 4);

@@ -102,22 +102,32 @@ const adcTargets = ref({});
 const adsTargets = ref({});
 
 const allSensors = computed(() => {
-  if (!sensorReadings.value || !sensorReadings.value.tags) return [];
-  const sensors = sensorReadings.value.tags.map(tag => {
-    const calData = calibrationData.value ? Object.values(calibrationData.value).find(c => c.pin === tag.port) : null;
+  const snapshot = sensorReadings.value;
+  if (!snapshot || !snapshot.sensors) return [];
+
+  return snapshot.sensors.map((sensor) => {
+    const meta = sensor.meta || {};
+    const pin = sensor.port ?? sensor.channel ?? meta.slave ?? sensor.id;
+    const calValues = calibrationData.value
+      ? Object.values(calibrationData.value).find((entry) => entry.pin === pin)
+      : null;
+
     return {
-      ...tag,
-      ...calData,
+      ...sensor,
+      port: pin,
+      channel: sensor.channel,
+      zero_raw_adc: calValues?.zero_raw_adc ?? meta.cal_zero_raw_adc,
+      span_raw_adc: calValues?.span_raw_adc ?? meta.cal_span_raw_adc,
+      zero_pressure_value: calValues?.zero_pressure_value ?? meta.cal_zero_pressure_value ?? meta.cal_zero,
+      span_pressure_value: calValues?.span_pressure_value ?? meta.cal_span_pressure_value ?? meta.cal_span,
     };
   });
-  return sensors;
 });
 
 const groupedSensors = computed(() => {
-  if (!allSensors.value) return {};
   const groups = {
-    'Analog Inputs': allSensors.value.filter(s => s.source === 'adc'),
-    'ADS Sensors': allSensors.value.filter(s => s.source === 'ads1115'),
+    'Analog Inputs': allSensors.value.filter((s) => s.type === 'adc'),
+    'ADS Sensors': allSensors.value.filter((s) => s.type === 'ads1115'),
   };
   return groups;
 });

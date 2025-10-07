@@ -30,10 +30,10 @@
             </div>
           </div>
           <span
-            :class="sensor.online ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/30 bg-rose-500/10 text-rose-200'"
+            :class="[statusBadgeClass(sensor)]"
             class="rounded-full border px-3 py-1 text-xs font-medium"
           >
-            {{ sensor.online ? 'Online' : 'Offline' }}
+            {{ sensor.stateLabel || (sensor.online ? 'Online' : 'Offline') }}
           </span>
         </header>
 
@@ -83,4 +83,20 @@ defineProps({
     default: '',
   },
 });
+
+function statusBadgeClass(sensor) {
+  const variant = sensor.stateVariant || (sensor.online ? 'ok' : 'offline');
+  switch (variant) {
+    case 'alert':
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    case 'pending':
+      return 'border-slate-500/30 bg-slate-500/10 text-slate-200';
+    case 'disabled':
+      return 'border-slate-600/40 bg-slate-800/70 text-slate-300';
+    default:
+      return sensor.online
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+        : 'border-rose-500/30 bg-rose-500/10 text-rose-200';
+  }
+}
 </script>

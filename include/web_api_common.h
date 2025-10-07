@@ -9,14 +9,17 @@
 extern AsyncWebServer *server;
 extern int webServerPort;
 
-// Server-Sent Events (SSE) event source for debug streams
+// Server-Sent Events (SSE) event sources
 extern AsyncEventSource *eventSourceDebug;
-// Optional alias so EventSource can connect at `/sse/debug` as well.
 extern AsyncEventSource *eventSourceDebugAlias;
+extern AsyncEventSource *eventSourceSensors;
 
-// Push a small JSON debug message via SSE (non-blocking). The implementation
-// may be in a .cpp file; declare the interface here so handlers can call it.
+// SSE helpers
 void pushSseDebugMessage(const char *event, const String &payload);
+void pushSensorsSnapshotEvent();
+void flagSensorsSnapshotUpdate();
+void serviceSensorsSnapshotUpdates();
+void ensureSensorSseRegistered(AsyncWebServer *server);
 
 // SD availability flag
 extern bool sdReady;

@@ -148,3 +148,7 @@ export function autoCalibrateAds(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function openSensorsEventSource() {
+  return new EventSource(`${API_BASE}/sse/sensors`);
+}
