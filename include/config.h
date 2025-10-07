@@ -46,7 +46,7 @@ static const char* const PREFERRED_PASSES[] = {
 
 // Logging verbosity
 #ifndef ENABLE_VERBOSE_LOGS
-#define ENABLE_VERBOSE_LOGS 1  // Temporarily enabled for SD card debugging
+#define ENABLE_VERBOSE_LOGS 0  // Set to 1 for debugging SD card issues
 #endif
 
 #if ENABLE_VERBOSE_LOGS
